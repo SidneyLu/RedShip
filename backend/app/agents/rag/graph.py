@@ -1,7 +1,7 @@
-"""Pipeline RAG LangGraph (PLAN.md).
+"""Pipeline RAG LangGraph（PLAN.md「快速问答」）。
 
-Graph:
-  query_analyzer → [kb_retriever | web_searcher] → evidence_merger → (SSE generator)
+图：query_analyzer → [kb_retriever | web_searcher] → evidence_merger → END；
+生成答案在图外由 generator_stream 流式输出 SSE（token/citation 等）。
 """
 from __future__ import annotations
 
@@ -61,6 +61,10 @@ async def run_rag_stream(
     history: list[dict[str, Any]] | None = None,
     attachments: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
+    """执行 RAG 图并产出 chat 路由消费的 SSE 事件 dict。
+
+    事件：stage、analysis、token、reasoning、citations_ready、done、final_state。
+    """
     if not message_id:
         message_id = str(uuid.uuid4())
 

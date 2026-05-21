@@ -1,4 +1,8 @@
-"""SQLAlchemy ORM models for RedShip backend."""
+"""RedShip 关系库 ORM 模型。
+
+ER 概要：User 1—N Thread 1—N Message；Document 1—N KnowledgeChunk（父块，Milvus 存子块）；
+Thread 1—N SessionFile（会话附件）。citations JSON 与前端 Citation 类型、引用 URL 对齐。
+"""
 from __future__ import annotations
 
 import uuid
@@ -28,6 +32,8 @@ def _uuid() -> str:
 
 
 class User(Base, TimestampMixin):
+    """注册用户；is_admin 可触发文献同步与上传。"""
+
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -42,7 +48,7 @@ class User(Base, TimestampMixin):
 
 
 class Document(Base, TimestampMixin):
-    """A source document in the knowledge base (bibliography or uploaded)."""
+    """知识库源文档：bibliography 目录、管理员 upload 或会话衍生。"""
 
     __tablename__ = "documents"
 
@@ -69,7 +75,7 @@ class Document(Base, TimestampMixin):
 
 
 class KnowledgeChunk(Base, TimestampMixin):
-    """A parent text chunk associated with one or more Milvus child chunks."""
+    """父文本块；child_ids 指向 Milvus 子块，检索后用于父块回溯与引用预览。"""
 
     __tablename__ = "knowledge_chunks"
 
@@ -93,6 +99,8 @@ class KnowledgeChunk(Base, TimestampMixin):
 
 
 class Thread(Base, TimestampMixin):
+    """对话线程；mode 为 chat（快速问答）或 research（深度研究）。"""
+
     __tablename__ = "threads"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -115,6 +123,8 @@ class Thread(Base, TimestampMixin):
 
 
 class Message(Base, TimestampMixin):
+    """单条消息；assistant 的 citations / research_events 由 chat 流结束后持久化。"""
+
     __tablename__ = "messages"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -134,7 +144,7 @@ class Message(Base, TimestampMixin):
 
 
 class SessionFile(Base, TimestampMixin):
-    """A file attached to a chat thread (Files API or session Milvus)."""
+    """会话附件：小文件 files_api（dashscope_file_id），大文件 session_rag（milvus_namespace）。"""
 
     __tablename__ = "session_files"
 
@@ -158,6 +168,8 @@ class SessionFile(Base, TimestampMixin):
 
 
 class AuditLog(Base):
+    """只追加审计日志，无 updated_at。"""
+
     __tablename__ = "audit_logs"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)

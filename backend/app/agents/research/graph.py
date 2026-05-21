@@ -1,7 +1,7 @@
-"""Deep Research LangGraph (PLAN.md).
+"""Deep Research LangGraph（PLAN.md「深度研究」）。
 
-Graph:
-  planner → search_iteration ⇄ reflect → build_citations → (SSE writer)
+图：planner → search → reflect →（条件回 search）→ citations → END；
+research_step 等进度经 events_queue 注入 run_research_stream；报告由 writer_stream 流式输出。
 """
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Alembic migrations environment for RedShip backend."""
+"""Alembic 迁移环境：使用 settings.database_url_sync 连接 Postgres。"""
 from __future__ import annotations
 
 from logging.config import fileConfig

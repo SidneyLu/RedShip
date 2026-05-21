@@ -1,4 +1,8 @@
-"""FastAPI application entrypoint."""
+"""FastAPI 应用入口：生命周期、路由挂载、健康检查。
+
+启动顺序：日志 → Milvus 集合 → 管理员 bootstrap → 后台 bibliography 同步；
+关闭时：取消同步任务 → 关闭 DashScope HTTP → Redis → 数据库引擎。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +26,7 @@ from app.llm.dashscope import get_dashscope_client
 
 
 async def _bootstrap_admin() -> None:
+    """首次启动时创建 .env 中配置的管理员账号（已存在则仅确保 is_admin）。"""
     factory = get_session_factory()
     async with factory() as session:
         existing = (
@@ -44,6 +49,7 @@ async def _bootstrap_admin() -> None:
 
 
 async def _initial_sync_task() -> None:
+    """后台任务：扫描 bibliography/ 并增量摄入，不阻塞 HTTP 监听。"""
     factory = get_session_factory()
     try:
         async with factory() as session:
@@ -76,7 +82,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Admin bootstrap failed: {}", e)
 
-    # Run initial bibliography sync in background so HTTP starts up immediately.
+    # 文献同步放后台，避免 MinerU/Milvus 拖慢首包
     sync_task: asyncio.Task | None = None
     try:
         sync_task = asyncio.create_task(_initial_sync_task())
@@ -94,6 +100,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    """构建 FastAPI 实例并注册全部 API 路由。"""
     app = FastAPI(
         title="日新册 · RedShip",
         version="0.1.0",
@@ -110,6 +117,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # 路由顺序无依赖；chat 提供 SSE 流式
     app.include_router(auth.router)
     app.include_router(threads.router)
     app.include_router(chat.router)

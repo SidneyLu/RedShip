@@ -1,5 +1,7 @@
 "use client";
 
+/** 未登录时的登录/注册表单。 */
+
 import { FormEvent, useState } from "react";
 import { useAuth } from "@/components/providers/AuthProvider";
 import { useToast } from "@/components/providers/ToastProvider";

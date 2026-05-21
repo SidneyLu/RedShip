@@ -1,4 +1,15 @@
-"""Streaming chat endpoint (fast RAG + Deep Research)."""
+"""SSE 流式聊天：快速问答（chat）与深度研究（research）。
+
+SSE data JSON 事件类型（与前端 useChatStream 一致）：
+  ack — 线程与用户/助手消息 id
+  stage / analysis — RAG 阶段与 query_analyzer 结果
+  research_step — 深度研究进度（planning、searching、writing 等）
+  citations_ready — 引用列表就绪
+  token / reasoning — 流式正文与思考链
+  done — 流结束，含 message_id、citations
+  error — 异常信息
+  final_state — 图结束时的 citations 等（内部聚合用）
+"""
 from __future__ import annotations
 
 import asyncio
@@ -46,6 +57,7 @@ async def _load_history(session: AsyncSession, thread_id: str, limit: int = 12) 
 
 
 def _sse(event: dict[str, Any]) -> dict[str, str]:
+    """封装为 sse-starlette 的 event:message + data 行。"""
     return {"event": "message", "data": json.dumps(event, ensure_ascii=False)}
 
 
@@ -55,7 +67,7 @@ async def chat(payload: ChatRequest, user: CurrentUser, session: DbSession):
         raise HTTPException(status_code=400, detail="Empty query")
     mode = payload.mode if payload.mode in {"chat", "research"} else "chat"
 
-    # Resolve / create the thread
+    # 解析或创建 thread，并立即持久化用户消息
     thread: Thread | None = None
     if payload.thread_id:
         thread = (

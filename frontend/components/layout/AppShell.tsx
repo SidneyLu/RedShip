@@ -1,5 +1,7 @@
 "use client";
 
+/** 应用壳：顶栏导航、鉴权门控与主内容区。 */
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LogOut, BookOpen, Shield, MessageSquareText } from "lucide-react";

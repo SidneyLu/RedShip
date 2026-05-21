@@ -1,7 +1,13 @@
 "use client";
 
+/**
+ * REST API 封装与共享类型；与 backend OpenAPI 路由对齐。
+ * 浏览器侧 base 来自 NEXT_PUBLIC_API_BASE_URL（next.config 可代理 /api）。
+ */
+
 const TOKEN_KEY = "redship.token";
 
+/** API 根路径；SSR 与客户端均读 NEXT_PUBLIC_API_BASE_URL */
 export function getApiBase(): string {
   if (typeof window === "undefined") {
     return process.env.NEXT_PUBLIC_API_BASE_URL || "";
@@ -87,6 +93,7 @@ export interface Thread {
   updated_at: string;
 }
 
+/** 单条引用；id 对应 Markdown 内 /threads/.../citations/{id} */
 export interface Citation {
   id: string;
   ordinal: number;

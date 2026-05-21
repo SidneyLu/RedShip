@@ -1,3 +1,5 @@
+/** 根布局：全局样式、AuthProvider、ToastProvider */
+
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/components/providers/AuthProvider";

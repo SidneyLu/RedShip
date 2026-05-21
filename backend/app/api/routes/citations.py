@@ -1,4 +1,4 @@
-"""Citation preview endpoints."""
+"""引用详情：从 Message.citations 按 id 取预览，供前端 citation 页与悬停。"""
 from __future__ import annotations
 
 from typing import Any

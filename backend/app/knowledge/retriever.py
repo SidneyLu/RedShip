@@ -1,6 +1,8 @@
-"""Retrieve passages from the knowledge base.
+"""知识库检索：Milvus 混合检索 → qwen3-rerank → Postgres 父块回溯。
 
-Pipeline: hybrid_search (Milvus ANN+BM25 + RRF) → qwen3-rerank → parent recall.
+流水线（PLAN.md「Hybrid 检索」）:
+  hybrid_search(dense+BM25+RRF) → rerank → _hits_to_passages → RetrievedPassage
+  会话附件通过 thread_id 合并 session namespace 命中。
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from app.llm.dashscope import dashscope_client
 
 
 def _merge_hits(*groups: list[HybridSearchHit]) -> list[HybridSearchHit]:
-    """Dedupe hybrid hits by Milvus id, keeping the best score."""
+    """按 Milvus id 去重，保留最高分。"""
     by_id: dict[str, HybridSearchHit] = {}
     for hits in groups:
         for h in hits:
@@ -31,13 +33,15 @@ def _merge_hits(*groups: list[HybridSearchHit]) -> list[HybridSearchHit]:
 
 @dataclass
 class RetrievedPassage:
-    id: str  # citation id, stable per query
+    """单条可引用段落；id 形如 c-1，与生成答案内 [(1)] 序号对应。"""
+
+    id: str  # 单次检索内稳定的 citation id
     doc_id: str
     document_title: str
     heading_path: str
     parent_index: int
-    parent_text: str
-    snippet: str  # the original child chunk text (highlight target)
+    parent_text: str  # 给 LLM 的上下文（父块全文）
+    snippet: str  # 子块原文，前端高亮用
     source: str  # bibliography | upload | session
     score: float
     era: str = ""
@@ -46,6 +50,7 @@ class RetrievedPassage:
     namespace: str = ""
 
     def to_citation(self, ordinal: int) -> dict:
+        """转为 SSE citation 事件与 Message.citations JSON 结构。"""
         return {
             "ordinal": ordinal,
             "id": self.id,
@@ -70,6 +75,7 @@ async def _hits_to_passages(
     *,
     session_titles: dict[str, str] | None = None,
 ) -> list[RetrievedPassage]:
+    """将 Milvus 命中联表 Document / KnowledgeChunk，组装 RetrievedPassage。"""
     if not ordered_hits:
         return []
 
@@ -132,7 +138,12 @@ async def retrieve(
     extra_filter: str | None = None,
     thread_id: str | None = None,
 ) -> list[RetrievedPassage]:
-    """Run the full hybrid + rerank + parent recall pipeline."""
+    """执行完整 hybrid + rerank + 父块回溯。
+
+    参数:
+        thread_id: 若提供则额外检索该会话 session_rag 附件 namespace。
+        extra_filter: 追加到 bibliography 源的 Milvus 过滤表达式。
+    """
     if not query.strip():
         return []
 
@@ -213,7 +224,7 @@ async def retrieve(
 
 
 def render_evidence_block(passages: Iterable[RetrievedPassage]) -> str:
-    """Compact evidence list for LLM consumption."""
+    """将段落列表格式化为 LLM evidence 文本块（带 [N] 序号）。"""
     lines: list[str] = []
     for i, p in enumerate(passages, start=1):
         meta_bits = []

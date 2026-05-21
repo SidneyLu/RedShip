@@ -1,5 +1,7 @@
 "use client";
 
+/** 左侧对话列表：新建、切换、删除 thread。 */
+
 import { useState } from "react";
 import { MessageSquarePlus, Trash2, PinIcon, Sparkles, MessageSquare } from "lucide-react";
 import { api, type Thread } from "@/lib/api";

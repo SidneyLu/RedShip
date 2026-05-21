@@ -1,5 +1,7 @@
 "use client";
 
+/** 知识库文档表格与筛选。 */
+
 import { formatDateTime } from "@/lib/utils";
 import type { KnowledgeDoc } from "@/lib/api";
 

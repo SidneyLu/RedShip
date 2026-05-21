@@ -1,5 +1,7 @@
 "use client";
 
+/** 输入框与发送：选择模式、附件上传入口。 */
+
 import { KeyboardEvent, useRef, useState } from "react";
 import { Send, Square, Sparkles, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";

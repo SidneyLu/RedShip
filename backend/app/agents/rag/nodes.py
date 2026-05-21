@@ -1,4 +1,7 @@
-"""Nodes of the Pipeline RAG LangGraph."""
+"""Pipeline RAG 图节点：分析、检索、合并证据、流式生成。
+
+query_analyzer 输出 route（kb|web|hybrid）；generator_stream 产出 token/reasoning SSE。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -25,6 +28,7 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _safe_json_loads(text: str) -> dict[str, Any]:
+    """容错解析 LLM 返回的 JSON（含 markdown 代码块包裹）。"""
     if not text:
         return {}
     text = text.strip()
@@ -43,6 +47,11 @@ def _safe_json_loads(text: str) -> dict[str, Any]:
 
 
 async def query_analyzer(state: RagState) -> dict[str, Any]:
+    """分析用户问题并决定检索路由。
+
+    调用 qwen3.6-plus，要求 JSON：rewritten、route(kb|web|hybrid)、实体字段。
+    写入 rewritten_query、entities、route。
+    """
     query = state["query"]
     history = state.get("history") or []
     messages = [{"role": "system", "content": QUERY_ANALYZER_SYSTEM}]
@@ -77,6 +86,7 @@ async def query_analyzer(state: RagState) -> dict[str, Any]:
 
 
 def route_decision(state: RagState) -> list[str]:
+    """根据 route 返回要并行执行的节点名列表（供 LangGraph Send）。"""
     route = (state.get("route") or "kb").lower()
     if route == "kb":
         return ["kb_retriever"]
@@ -88,6 +98,7 @@ def route_decision(state: RagState) -> list[str]:
 
 
 async def kb_retriever(state: RagState, *, session: AsyncSession) -> dict[str, Any]:
+    """混合检索知识库 + 会话附件，结果写入 kb_passages。"""
     rewritten = state.get("rewritten_query") or state["query"]
     entities = state.get("entities") or {}
     era = entities.get("era")
@@ -105,7 +116,7 @@ async def kb_retriever(state: RagState, *, session: AsyncSession) -> dict[str, A
 
 
 async def web_searcher(state: RagState) -> dict[str, Any]:
-    """Run a web search via Chat Completions with enable_search=True."""
+    """Chat Completions enable_search 联网检索；结果缓存 24h。"""
     query = state.get("rewritten_query") or state["query"]
     cache_key = f"search:{hashlib.sha256(query.encode()).hexdigest()}"
     cached = await cache_get_json(cache_key)
@@ -163,7 +174,7 @@ async def web_searcher(state: RagState) -> dict[str, Any]:
 
 
 def evidence_merger(state: RagState) -> dict[str, Any]:
-    """Build the unified citation list combining KB passages and web hits."""
+    """合并 kb_passages 与 web_results 为统一 citations 列表（带 ordinal）。"""
     citations: list[dict[str, Any]] = []
     ordinal = 1
 
@@ -215,13 +226,10 @@ async def generator_stream(
     thread_id: str,
     message_id: str,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Stream the final answer; yields control events suitable for SSE.
+    """流式生成最终答案，产出 SSE 事件。
 
-    Events:
-        {"type": "citations_ready", "items": [...]}
-        {"type": "token", "content": "..."}
-        {"type": "reasoning", "content": "..."}
-        {"type": "done"}
+    类型：citations_ready、token、reasoning、done、error。
+    引用链接格式见 prompts ANSWER_SYSTEM_TEMPLATE。
     """
     citations = state.get("citations") or []
     yield {"type": "citations_ready", "items": citations}

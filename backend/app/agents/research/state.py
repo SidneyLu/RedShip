@@ -1,10 +1,14 @@
-"""Typed state for the Deep Research graph."""
+"""Deep Research LangGraph 状态 TypedDict。
+
+planner → search ⇄ reflect 循环 → build_citations → writer_stream。
+"""
 from __future__ import annotations
 
 from typing import Any, TypedDict
 
 
 class ResearchEvidence(TypedDict, total=False):
+    """单次子查询从 web_extractor 得到的网页摘录。"""
     sub_question: str
     iteration: int
     url: str
@@ -15,6 +19,8 @@ class ResearchEvidence(TypedDict, total=False):
 
 
 class ResearchState(TypedDict, total=False):
+    """深度研究图状态；iteration / need_more 控制反思循环。"""
+
     thread_id: str
     user_id: str
     query: str

@@ -1,9 +1,8 @@
-"""Session-scoped document intelligence.
+"""会话级文档智能（PLAN.md「文档智能」）。
 
-Per PLAN.md — strict two-path routing, no cross-fallback:
-
-  ≤ FILES_API_INLINE_MAX_TOKENS  → DashScope Files API (`fileid://` in system message)
-  > threshold                    → MinerU parse → chunk → embed → Milvus session namespace
+严格双路径，无运行时回退：
+  ≤ FILES_API_INLINE_MAX_TOKENS → DashScope Files API（system 中 fileid://）
+  > 阈值 → MinerU 解析 → 分块 → embed → Milvus namespace（thread 隔离）
 """
 from __future__ import annotations
 
@@ -45,7 +44,7 @@ def _file_sha(path: Path) -> str:
 
 
 def _uses_files_api(path: Path) -> bool:
-    """Decide Files API vs session RAG before ingestion — no runtime fallback."""
+    """上传前判定走 Files API 还是会话 Milvus；判定后不可切换。"""
     ext = path.suffix.lower()
     size = path.stat().st_size
 

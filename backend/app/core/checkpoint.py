@@ -1,4 +1,8 @@
-"""LangGraph checkpoint persistence on Redis (`ckpt:{thread_id}`, 7-day TTL)."""
+"""LangGraph 检查点持久化：Redis 键 `ckpt:{thread_id}`，TTL 7 天。
+
+使同一会话 thread 在快速问答/深度研究中断后可恢复图状态；
+序列化使用 LangGraph JsonPlusSerializer + base64 存储。
+"""
 from __future__ import annotations
 
 import base64
@@ -19,10 +23,13 @@ _SERDE = JsonPlusSerializer()
 
 
 def _key(thread_id: str) -> str:
+    """Redis 键：与 thread UUID 一一对应。"""
     return f"ckpt:{thread_id}"
 
 
 class RedisCheckpointSaver(BaseCheckpointSaver):
+    """基于 Redis 的异步 CheckpointSaver；同步接口未实现，请用 a* 方法。"""
+
     serde = _SERDE
 
     def get_tuple(self, config: dict[str, Any]) -> CheckpointTuple | None:
@@ -56,6 +63,7 @@ class RedisCheckpointSaver(BaseCheckpointSaver):
         return None
 
     async def aget_tuple(self, config: dict[str, Any]) -> CheckpointTuple | None:
+        """从 Redis 加载最新 checkpoint；不存在则返回 None。"""
         thread_id = config["configurable"]["thread_id"]
         raw = await cache_get_json(_key(thread_id))
         if not raw:
@@ -76,6 +84,7 @@ class RedisCheckpointSaver(BaseCheckpointSaver):
         before: dict[str, Any] | None = None,
         limit: int | None = None,
     ) -> AsyncIterator[CheckpointTuple]:
+        """当前实现仅返回该 thread 的最新一条 checkpoint。"""
         if config is None:
             return
         tup = await self.aget_tuple(config)
@@ -89,6 +98,7 @@ class RedisCheckpointSaver(BaseCheckpointSaver):
         metadata: CheckpointMetadata,
         new_versions: dict[str, Any],
     ) -> dict[str, Any]:
+        """序列化 checkpoint 写入 Redis 并刷新 TTL。"""
         thread_id = config["configurable"]["thread_id"]
         payload = {
             "checkpoint_b64": base64.b64encode(self.serde.dumps(checkpoint)).decode("ascii"),
@@ -111,6 +121,7 @@ _checkpointer: RedisCheckpointSaver | None = None
 
 
 def get_checkpointer() -> RedisCheckpointSaver:
+    """LangGraph 编译图时注入的 checkpointer 单例。"""
     global _checkpointer
     if _checkpointer is None:
         _checkpointer = RedisCheckpointSaver()

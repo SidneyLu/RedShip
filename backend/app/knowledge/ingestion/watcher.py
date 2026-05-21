@@ -1,8 +1,7 @@
-"""Bibliography incremental ingestion watcher.
+"""bibliography/ 增量同步：按 SHA-256 检测新增或变更文件。
 
-Scans `BIBLIOGRAPHY_DIR` (mounted into the backend container at /bibliography by
-default), parses any file that is new (by SHA-256) or whose hash changed, runs
-the chunker + Milvus indexer, and records progress in PostgreSQL.
+触发：main 启动后台任务、POST /api/admin/bibliography/sync。
+流程：parse → chunk → embed → Milvus upsert → 更新 Document/KnowledgeChunk 状态。
 """
 from __future__ import annotations
 

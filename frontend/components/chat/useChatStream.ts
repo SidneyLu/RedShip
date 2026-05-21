@@ -1,9 +1,23 @@
 "use client";
 
+/**
+ * 聊天 SSE 状态机：对接 POST /api/chat，与 backend chat.py 事件表一致。
+ *
+ * 事件处理：
+ *   ack — thread_id、assistant_message_id
+ *   stage / analysis — 快速问答阶段
+ *   research_step — 深度研究进度
+ *   citations_ready — 引用列表
+ *   token / reasoning — 流式正文
+ *   done — 结束并触发 onDone
+ *   error — 错误信息
+ */
+
 import { useCallback, useRef, useState } from "react";
 import { streamSSE, type SSEEventBase } from "@/lib/sse";
 import type { Citation, Message } from "@/lib/api";
 
+/** 单条 research_step 事件快照，供 ResearchProgress 展示 */
 export interface ResearchStep {
   step: string;
   iteration?: number;

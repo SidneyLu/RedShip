@@ -1,7 +1,6 @@
-"""Parse PDF / MD / DOCX / TXT via MinerU (PDF/DOCX) or direct read (MD/TXT).
+"""文献解析：PDF/DOCX 仅 MinerU；MD/TXT 直接读取并按标题切 Section。
 
-Per PLAN.md: MinerU is the sole parser for PDF and DOCX. There is no pypdf or
-python-docx fallback path.
+对应 PLAN.md 摄入管道第一步；无 pypdf/python-docx 回退路径。
 """
 from __future__ import annotations
 

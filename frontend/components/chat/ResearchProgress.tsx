@@ -1,5 +1,7 @@
 "use client";
 
+/** 深度研究模式侧边进度：将 research_step 事件映射为步骤 UI。 */
+
 import { useMemo } from "react";
 import { Loader2, Search, Compass, Lightbulb, PencilLine, BookOpen, Sparkles } from "lucide-react";
 import type { ResearchStep } from "./useChatStream";

@@ -1,12 +1,19 @@
 "use client";
 
+/**
+ * 渲染助手 Markdown；将内嵌引用链接转为 CitationChip。
+ * 链接格式：/threads/{tid}/messages/{mid}/citations/{id}，标签为 (N) / [N] / #N。
+ */
+
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CitationChip } from "@/components/citations/CitationChip";
 import type { Citation } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
+/** 后端 generator 写入的引用 href 模式 */
 const CITATION_HREF_RE = /^\/threads\/[^/]+\/messages\/[^/]+\/citations\/([^/]+)$/i;
+/** 仅当链接文字为序号标签时才替换为 chip */
 const LABEL_RE = /^\s*(?:\(\d+\)|#\d+|\[\d+\])\s*$/;
 
 function findCitation(citations: Citation[] | null | undefined, id: string): Citation | undefined {

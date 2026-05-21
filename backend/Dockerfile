@@ -1,3 +1,4 @@
+# FastAPI 镜像：含 MinerU pipeline CPU 依赖与 Alembic 迁移入口
 FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -8,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# MinerU pipeline backend (CPU) runtime dependencies
+# MinerU pipeline（CPU）系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         curl \

@@ -1,3 +1,5 @@
+/** 通用工具：cn 合并 className、日期格式化等 */
+
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 

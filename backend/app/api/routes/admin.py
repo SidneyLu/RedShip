@@ -1,4 +1,4 @@
-"""Admin endpoints (bibliography sync, reindex)."""
+"""管理员接口：bibliography 增量同步、全量重建索引（可 SSE 进度）。"""
 from __future__ import annotations
 
 import json

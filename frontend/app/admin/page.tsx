@@ -1,5 +1,7 @@
 "use client";
 
+/** 管理页：文献增量同步、全量重建索引（管理员）。 */
+
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Loader2, RefreshCw } from "lucide-react";

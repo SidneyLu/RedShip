@@ -1,4 +1,4 @@
-"""Authentication: register, login, /me."""
+"""用户认证：注册、登录（返回 JWT）、/me 当前用户信息。"""
 from __future__ import annotations
 
 from datetime import datetime, timezone

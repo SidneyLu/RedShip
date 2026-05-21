@@ -1,6 +1,6 @@
-"""Milvus collection management & upsert helpers.
+"""Milvus 集合管理与混合检索写入。
 
-Collection schema (jieba BM25 + dense vectors):
+集合 schema（jieba BM25 + 稠密向量，见 PLAN.md Milvus Schema）：
 
     id            VARCHAR (primary)
     text          VARCHAR (analyzer=jieba)  -- enables BM25 sparse vector
@@ -35,6 +35,8 @@ from app.core.config import settings
 
 @dataclass
 class IndexableChunk:
+    """待 upsert 的一条 Milvus 记录；子块带 dense，父块仅存 Postgres。"""
+
     id: str
     text: str
     dense: list[float]
@@ -91,7 +93,7 @@ def _build_schema(dim: int) -> CollectionSchema:
 
 
 def ensure_collection(collection_name: str | None = None) -> str:
-    """Create the collection + indexes if they do not exist; returns its name."""
+    """若集合不存在则创建 HNSW + BM25 索引并 load；返回集合名。"""
     name = collection_name or settings.milvus_kb_collection
     client = get_milvus()
     if client.has_collection(name):
@@ -133,7 +135,7 @@ def drop_doc(collection_name: str, doc_id: str) -> int:
 
 
 def drop_namespace(collection_name: str, namespace: str) -> int:
-    """Remove all Milvus rows scoped to a session namespace."""
+    """删除某会话 namespace 下全部 Milvus 行（附件重传前清理）。"""
     if not namespace:
         return 0
     client = get_milvus()
@@ -167,6 +169,8 @@ def upsert_chunks(collection_name: str, chunks: Sequence[IndexableChunk]) -> int
 
 @dataclass
 class HybridSearchHit:
+    """混合检索单条命中；parent_index 用于 Postgres 父块回溯。"""
+
     id: str
     score: float
     text: str
@@ -188,9 +192,10 @@ def hybrid_search(
     extra_filter: str | None = None,
     rrf_k: int = 60,
 ) -> list[HybridSearchHit]:
-    """Run dense + BM25 sparse search and fuse with RRF.
+    """稠密 ANN + BM25 稀疏检索，RRFRanker 融合后取 top_k。
 
-    Returns the top-`top_k` distinct hits.
+    参数:
+        extra_filter: Milvus 表达式，如 source、namespace 过滤。
     """
     client = get_milvus()
 

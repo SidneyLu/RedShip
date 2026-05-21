@@ -1,4 +1,4 @@
-"""Thread / message CRUD."""
+"""对话线程与消息 CRUD；删除线程时清理会话 Milvus/Files API 资源。"""
 from __future__ import annotations
 
 from datetime import datetime

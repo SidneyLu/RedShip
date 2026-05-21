@@ -1,5 +1,7 @@
 "use client";
 
+/** 首页：聊天主界面，?thread= 深链打开指定对话。 */
+
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { AppShell } from "@/components/layout/AppShell";

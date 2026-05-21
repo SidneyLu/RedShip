@@ -1,3 +1,4 @@
+# 多阶段：deps → builder（next build）→ runner（node server.js）
 FROM node:20-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache libc6-compat

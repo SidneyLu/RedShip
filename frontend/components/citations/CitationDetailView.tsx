@@ -1,5 +1,7 @@
 "use client";
 
+/** 引用详情页主体：展示 parent_text、来源元数据。 */
+
 import type { Citation } from "@/lib/api";
 
 export function CitationDetailView({ citation }: { citation: Citation }) {

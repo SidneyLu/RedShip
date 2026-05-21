@@ -1,6 +1,7 @@
-"""Unified DashScope client wrapping embed / rerank / chat / responses / files.
+"""DashScope 统一客户端：embed / rerank / chat / responses / files。
 
-All AI capabilities run through DashScope; no local model dependencies.
+对应 PLAN.md「dashscope-client」。全项目无本地大模型，均经 OpenAI 兼容端点调用；
+embedding 结果可缓存至 Redis（键 `emb:v4:{dim}:{sha256}`）。
 """
 from __future__ import annotations
 
@@ -26,28 +27,27 @@ from app.core.config import settings
 from app.core.redis import cache_get_json, cache_set_json
 
 
-# DashScope batch size limit for text-embedding-v3/v4 is 10 inputs per request.
+# text-embedding-v4 单次请求最多 10 条文本
 EMBEDDING_BATCH_SIZE = 10
-EMBED_CACHE_TTL = 60 * 60  # 1h
+EMBED_CACHE_TTL = 60 * 60  # 1 小时
 
 
 @dataclass
 class RerankResult:
+    """rerank API 单条结果：index 指向入参 documents 下标。"""
     index: int
     score: float
     text: str | None = None
 
 
 class DashScopeClient:
-    """Thin async wrapper around DashScope's OpenAI-compatible endpoints."""
+    """DashScope OpenAI 兼容 API 的异步薄封装；懒加载 chat 客户端与 httpx。"""
 
     def __init__(self) -> None:
         self._chat_client: AsyncOpenAI | None = None
         self._http: httpx.AsyncClient | None = None
 
-    # ------------------------------------------------------------------
-    # Lazy resources
-    # ------------------------------------------------------------------
+    # --- 懒加载 HTTP 资源 ---
     def _ensure_chat_client(self) -> AsyncOpenAI:
         if self._chat_client is None:
             self._chat_client = AsyncOpenAI(
@@ -73,9 +73,7 @@ class DashScopeClient:
             await self._chat_client.close()
             self._chat_client = None
 
-    # ------------------------------------------------------------------
-    # Embedding
-    # ------------------------------------------------------------------
+    # --- Embedding（text-embedding-v4）---
     async def embed(
         self,
         texts: list[str] | str,
@@ -83,9 +81,15 @@ class DashScopeClient:
         dimensions: int | None = None,
         use_cache: bool = True,
     ) -> list[list[float]]:
-        """Compute dense embeddings via DashScope text-embedding-v4 (OpenAI compatible).
+        """计算稠密向量；顺序与输入 texts 一致。
 
-        Returns embeddings in the same order as the input texts.
+        参数:
+            texts: 单条字符串或列表。
+            dimensions: 向量维度，默认 settings.embedding_dim。
+            use_cache: 是否读/写 Redis 缓存。
+
+        返回:
+            每条文本对应一个 float 列表；空输入返回 []。
         """
         if isinstance(texts, str):
             single = True
@@ -103,7 +107,7 @@ class DashScopeClient:
         results: list[list[float] | None] = [None] * len(input_texts)
         cache_keys: list[str | None] = [None] * len(input_texts)
 
-        # Cache lookup
+        # 先查 Redis，未命中再批量请求 API
         if use_cache:
             for i, text in enumerate(input_texts):
                 key = f"emb:v4:{dim}:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
@@ -142,9 +146,7 @@ class DashScopeClient:
         out = [r if r is not None else [0.0] * dim for r in results]
         return out[0:1] if single else out
 
-    # ------------------------------------------------------------------
-    # Rerank
-    # ------------------------------------------------------------------
+    # --- Rerank（qwen3-rerank）---
     async def rerank(
         self,
         query: str,
@@ -153,9 +155,16 @@ class DashScopeClient:
         top_n: int | None = None,
         instruct: str | None = None,
     ) -> list[RerankResult]:
-        """Rerank documents against query via qwen3-rerank.
+        """对 documents 按与 query 的相关性重排。
 
-        Returns indices into `documents` ordered by relevance descending.
+        参数:
+            query: 用户检索问句。
+            documents: 待打分段落列表。
+            top_n: 返回条数上限。
+            instruct: 党史领域默认英文 instruct，可覆盖。
+
+        返回:
+            按相关分降序的 RerankResult，index 为 documents 下标。
         """
         if not documents:
             return []
@@ -202,9 +211,7 @@ class DashScopeClient:
             out.append(RerankResult(index=idx, score=score, text=text))
         return out
 
-    # ------------------------------------------------------------------
-    # Chat Completions (with optional web search)
-    # ------------------------------------------------------------------
+    # --- Chat Completions（快速问答、query_analyzer 等）---
     async def chat_stream(
         self,
         messages: list[dict[str, Any]],
@@ -216,13 +223,10 @@ class DashScopeClient:
         forced_search: bool = False,
         extra_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream Chat Completions chunks.
+        """流式 Chat Completions。
 
-        Yields dicts with shape:
-            {"type": "delta", "content": str}
-            {"type": "reasoning", "content": str}
-            {"type": "search_info", "results": list}
-            {"type": "done", "finish_reason": str, "usage": dict|None}
+        产出事件类型:
+            delta / reasoning / search_info / done（见 rag nodes generator_stream）。
         """
         client = self._ensure_chat_client()
         body: dict[str, Any] = {}
@@ -287,7 +291,7 @@ class DashScopeClient:
         extra_body: dict[str, Any] | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Non-streaming Chat Completions call returning a parsed dict."""
+        """非流式 Chat；用于 query_analyzer 等需 JSON 的场景。"""
         client = self._ensure_chat_client()
         kwargs: dict[str, Any] = {
             "model": model or settings.chat_model,
@@ -301,9 +305,7 @@ class DashScopeClient:
         resp = await client.chat.completions.create(**{k: v for k, v in kwargs.items() if v is not None})
         return resp.model_dump()
 
-    # ------------------------------------------------------------------
-    # Responses API (Deep Research, web_search + web_extractor)
-    # ------------------------------------------------------------------
+    # --- Responses API（深度研究：web_search + web_extractor）---
     async def responses_stream(
         self,
         input_text: str | list[dict[str, Any]],
@@ -313,14 +315,10 @@ class DashScopeClient:
         enable_thinking: bool = True,
         extra_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream Responses API output events.
+        """流式 Responses API；解析 SSE 为结构化 dict 供 research nodes 消费。
 
-        The DashScope Responses endpoint streams Server-Sent Events; we re-emit
-        them as structured dicts:
-            {"type": "response.output_text.delta", "text": str}
-            {"type": "web_search_call.completed", "results": [...]}
-            {"type": "web_extractor_call.completed", "url": ..., "title": ..., "output": ...}
-            {"type": "response.completed", "response": {...}}
+        常见 type：response.output_text.delta、web_search_call.completed、
+        web_extractor_call.completed、response.completed。
         """
         url = f"{settings.dashscope_responses_base_url.rstrip('/')}/responses"
         body: dict[str, Any] = {
@@ -376,11 +374,9 @@ class DashScopeClient:
                     data["type"] = ev_type
                     yield data
 
-    # ------------------------------------------------------------------
-    # Files API
-    # ------------------------------------------------------------------
+    # --- Files API（小会话文档 fileid:// 注入）---
     async def upload_file(self, path: str | Path, purpose: str = "file-extract") -> str:
-        """Upload a file to DashScope Files API and return the file id."""
+        """上传文件至 DashScope，返回 file id 供 system message 引用。"""
         client = self._ensure_chat_client()
         p = Path(path)
         # OpenAI SDK files.create accepts a file path-like object
@@ -400,6 +396,7 @@ _client: DashScopeClient | None = None
 
 
 def get_dashscope_client() -> DashScopeClient:
+    """进程内 DashScope 客户端单例。"""
     global _client
     if _client is None:
         _client = DashScopeClient()

@@ -1,5 +1,7 @@
 "use client";
 
+/** 引用详情路由页：/threads/:id/messages/:mid/citations/:cid */
+
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";

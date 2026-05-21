@@ -1,5 +1,7 @@
 "use client";
 
+/** 知识库浏览页：统计、文档列表与上传入口。 */
+
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";

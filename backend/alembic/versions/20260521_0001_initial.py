@@ -1,9 +1,13 @@
-"""Initial schema for RedShip backend.
+"""RedShip 初始库表结构。
+
+表业务含义：
+- users：账号与管理员标记
+- documents / knowledge_chunks：文献元数据与父块（向量在 Milvus）
+- threads / messages：对话与 SSE 落库内容
+- session_files：会话附件（Files API 或 session Milvus）
+- audit_logs：管理操作审计
 
 Revision ID: 0001_initial
-Revises:
-Create Date: 2026-05-21 00:00:00
-
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # --- 用户与鉴权 ---
     op.create_table(
         "users",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
@@ -34,6 +39,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_users_email", "users", ["email"])
 
+    # --- 知识库文献 ---
     op.create_table(
         "documents",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
@@ -57,6 +63,7 @@ def upgrade() -> None:
     op.create_index("ix_documents_file_sha256", "documents", ["file_sha256"])
     op.create_index("ix_documents_source_status", "documents", ["source", "status"])
 
+    # --- 父块（Milvus 存子块 id 列表）---
     op.create_table(
         "knowledge_chunks",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
@@ -74,6 +81,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_knowledge_chunks_document_id", "knowledge_chunks", ["document_id"])
 
+    # --- 对话 ---
     op.create_table(
         "threads",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
@@ -105,6 +113,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_messages_thread_id", "messages", ["thread_id"])
 
+    # --- 会话附件 ---
     op.create_table(
         "session_files",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
@@ -125,6 +134,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_session_files_thread_id", "session_files", ["thread_id"])
 
+    # --- 审计 ---
     op.create_table(
         "audit_logs",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),

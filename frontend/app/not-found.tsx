@@ -1,3 +1,5 @@
+/** 404 页面 */
+
 import Link from "next/link";
 
 export default function NotFound() {

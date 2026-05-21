@@ -1,3 +1,4 @@
+# 开发覆盖：源码 bind-mount + uvicorn --reload / npm run dev
 name: redship
 
 services:

@@ -1,5 +1,7 @@
 "use client";
 
+/** 会话附件列表与上传状态展示。 */
+
 import { useEffect, useState, useRef } from "react";
 import { Paperclip, FileText, X, Loader2 } from "lucide-react";
 import { api, getApiBase, getToken, type SessionFileItem } from "@/lib/api";

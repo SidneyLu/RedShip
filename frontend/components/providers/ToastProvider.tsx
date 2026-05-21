@@ -1,5 +1,7 @@
 "use client";
 
+/** 全局 toast 通知。 */
+
 import {
   ReactNode,
   createContext,

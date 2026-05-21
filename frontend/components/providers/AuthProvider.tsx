@@ -1,5 +1,7 @@
 "use client";
 
+/** JWT 登录态、/me 拉取与登出；子组件通过 context 取 user。 */
+
 import {
   ReactNode,
   createContext,

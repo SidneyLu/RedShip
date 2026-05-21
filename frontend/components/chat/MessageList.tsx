@@ -1,5 +1,7 @@
 "use client";
 
+/** 消息气泡列表；助手消息用 MarkdownMessage 渲染引用。 */
+
 import { useEffect, useRef } from "react";
 import { Bot, User as UserIcon, BookOpen, Sparkles } from "lucide-react";
 import { MarkdownMessage } from "./MarkdownMessage";

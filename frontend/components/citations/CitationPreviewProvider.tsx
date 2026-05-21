@@ -1,5 +1,7 @@
 "use client";
 
+/** 全局引用悬停预览浮层上下文。 */
+
 import {
   ReactNode,
   createContext,

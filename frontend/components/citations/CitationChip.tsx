@@ -1,5 +1,7 @@
 "use client";
 
+/** 行内引用角标；悬停可触发 CitationPreviewProvider。 */
+
 import { useCallback } from "react";
 import { useCitationPreview } from "./CitationPreviewProvider";
 import { cn } from "@/lib/utils";

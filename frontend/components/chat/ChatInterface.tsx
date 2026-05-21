@@ -1,5 +1,7 @@
 "use client";
 
+/** 主聊天区：线程列表、消息流、模式切换（chat/research）、Composer 与 SSE 流。 */
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Composer } from "./Composer";

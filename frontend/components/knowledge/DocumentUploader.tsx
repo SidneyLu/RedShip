@@ -1,5 +1,7 @@
 "use client";
 
+/** 管理员文档上传组件。 */
+
 import { useRef, useState } from "react";
 import { Loader2, Upload } from "lucide-react";
 import { getApiBase, getToken } from "@/lib/api";

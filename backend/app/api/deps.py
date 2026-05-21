@@ -1,4 +1,4 @@
-"""FastAPI dependencies (DB session, current user, admin guard)."""
+"""FastAPI 依赖注入：数据库会话、当前用户、管理员校验。"""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -26,6 +26,7 @@ async def get_current_user(
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     session: Annotated[AsyncSession, Depends(db_session)],
 ) -> User:
+    """Bearer JWT 解析 sub 并加载活跃用户。"""
     if creds is None or not creds.credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     try:
@@ -47,6 +48,7 @@ DbSession = Annotated[AsyncSession, Depends(db_session)]
 
 
 async def require_admin(user: CurrentUser) -> User:
+    """要求 is_admin，否则 403。"""
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin required")
     return user

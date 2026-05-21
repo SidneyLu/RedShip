@@ -1,4 +1,4 @@
-"""Deep Research nodes built on top of the DashScope Responses API."""
+"""深度研究节点：基于 DashScope Responses API（web_search + web_extractor）。"""
 from __future__ import annotations
 
 import asyncio
@@ -36,6 +36,7 @@ def _parse_json(text: str) -> dict[str, Any]:
 
 
 async def planner(state: ResearchState) -> dict[str, Any]:
+    """将用户问题分解为 sub_questions 与 plan_summary（JSON）。"""
     messages = [
         {"role": "system", "content": PLANNER_SYSTEM},
         {"role": "user", "content": state["query"]},
@@ -57,9 +58,10 @@ async def planner(state: ResearchState) -> dict[str, Any]:
 
 
 async def _run_subquery(sub_question: str, iteration: int) -> tuple[list[ResearchEvidence], list[dict[str, Any]]]:
-    """Run a Responses-API web search + extractor for a single sub-question.
+    """对单个子问题调用 Responses API 搜索并抽取网页正文。
 
-    Returns (evidence_list, raw_search_results).
+    返回:
+        (evidence_list, raw_search_hits)
     """
     evidence: list[ResearchEvidence] = []
     search_hits: list[dict[str, Any]] = []
@@ -128,7 +130,7 @@ async def parallel_searcher(
     iteration: int,
     emit: callable,  # type: ignore
 ) -> dict[str, Any]:
-    """Fan out the supplied questions and gather evidence."""
+    """并发执行多个子问题检索，受 research_parallel_subqueries 信号量限制。"""
     sem = asyncio.Semaphore(max(1, settings.research_parallel_subqueries))
 
     async def _one(q: str):
@@ -166,6 +168,7 @@ async def parallel_searcher(
 
 
 async def reflector(state: ResearchState) -> dict[str, Any]:
+    """根据已收集证据判断 need_more 与 follow_ups，驱动下一轮 search。"""
     evidence_summary = "\n".join(
         f"- ({e.get('iteration')}) [{e.get('title') or e.get('url','')}] {e.get('snippet','')[:160]}"
         for e in (state.get("evidence") or [])[:40]
@@ -195,6 +198,7 @@ async def reflector(state: ResearchState) -> dict[str, Any]:
 
 
 def build_citations(evidence: list[ResearchEvidence]) -> list[dict[str, Any]]:
+    """将 evidence 去重 URL 后转为前端 citation 结构（source_type=web）。"""
     citations: list[dict[str, Any]] = []
     seen_urls: dict[str, int] = {}
     ordinal = 1
@@ -232,6 +236,7 @@ async def writer_stream(
     thread_id: str,
     message_id: str,
 ) -> AsyncIterator[dict[str, Any]]:
+    """流式撰写研究报告；SSE 事件：token、reasoning、done。"""
     citations = state.get("citations") or []
     system_prompt = WRITER_SYSTEM.format(thread_id=thread_id, message_id=message_id)
 

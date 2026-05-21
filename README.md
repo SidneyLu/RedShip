@@ -104,6 +104,42 @@ RESEARCH_MAX_ITERATIONS=6
 
 请参阅 [`PLAN.md`](PLAN.md) 获取架构图、Milvus Schema、SSE 事件格式与实施阶段说明。
 
-## 许可
+## 代码注释约定
 
-本项目用于南开大学党史研究与教学辅助，文献版权归原出版社所有。
+源码注释统一为**中文**，专有名词保留英文（LangGraph、Milvus、DashScope、SSE 等）。层次如下：
+
+| 层级 | 要求 |
+|------|------|
+| 文件/模块 | 3–8 行：职责、上下游、与 PLAN 对应章节 |
+| 类 / 导出类型 | 用途与生命周期 |
+| 公共函数 / 路由 / Hook | `参数` / `返回` / `异常`（Python docstring 或 TS JSDoc） |
+| 行内注释 | 仅标注非显而易见逻辑（路由分支、序列化、SSE 分帧等） |
+
+**不写**：自解释赋值、纯 re-export 的 `__init__.py`、LLM 提示词正文（`prompts.py`）。
+
+**Python 模板**（公共函数）：
+
+```python
+async def example(state: RagState) -> dict[str, Any]:
+    """一句话职责说明。
+
+    参数:
+        state: 图状态，含 query、history 等字段。
+
+    返回:
+        写入图的状态片段。
+
+    异常:
+        ValueError: 失败原因。
+    """
+```
+
+**TypeScript 模板**（导出函数）：
+
+```typescript
+/**
+ * 一句话职责说明。
+ * @param path - 相对或绝对 API 路径
+ * @returns 解析后的 SSE 事件流
+ */
+```

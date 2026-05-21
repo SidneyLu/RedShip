@@ -1,12 +1,8 @@
-"""Semantic chunker producing parent/child chunks for hybrid retrieval.
+"""语义分块：父子块策略供混合检索使用。
 
-Strategy:
-  * parent chunks  ≈ 400–600 Chinese characters, aligned to section boundaries
-  * child chunks   ≈ 180–240 characters, overlap 30 chars
-  * parents preserve heading context; children inherit doc_id + parent_index
-
-Children are what we embed and index in Milvus. Parents are stored in Postgres
-and reconstructed at retrieval time to provide the LLM with sufficient context.
+- 父块约 400–600 字，对齐 Section 边界，存 Postgres
+- 子块约 180–240 字、重叠 30 字，embed 后写入 Milvus
+- 检索时用子块命中，回答时回溯父块全文作为 LLM 上下文
 """
 from __future__ import annotations
 
@@ -40,7 +36,7 @@ def split_sentences(text: str) -> list[str]:
 
 
 def _coalesce(sentences: list[str], target: int, hard_max: int | None = None) -> list[str]:
-    """Greedily merge sentences into chunks roughly of `target` characters."""
+    """按目标字数贪心合并句子为块。"""
     chunks: list[str] = []
     buf: list[str] = []
     buf_len = 0

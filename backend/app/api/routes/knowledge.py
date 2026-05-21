@@ -1,4 +1,4 @@
-"""Knowledge base inspection and admin upload management."""
+"""知识库文档列表、详情与管理员上传（触发 ingest_upload_file）。"""
 from __future__ import annotations
 
 import shutil

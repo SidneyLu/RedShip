@@ -1,12 +1,25 @@
 "use client";
 
+/**
+ * 消费后端 POST /api/chat 的 SSE 流。
+ * 按 `\n\n` 分事件，合并多行 `data:` 后 JSON.parse；与 backend chat._sse 对称。
+ */
+
 import { getApiBase, getToken } from "@/lib/api";
 
+/** 与 backend chat 路由 data JSON 的 type 字段对应 */
 export interface SSEEventBase {
   type: string;
   [key: string]: any;
 }
 
+/**
+ * 发起 SSE POST 并对每个解析后的事件调用 onEvent。
+ * @param path - 如 `/api/chat`
+ * @param body - ChatRequest JSON
+ * @param onEvent - 每帧 JSON 回调
+ * @param options.signal - 用于取消（useChatStream AbortController）
+ */
 export async function streamSSE(
   path: string,
   body: any,
@@ -60,7 +73,7 @@ export async function streamSSE(
         const parsed = JSON.parse(payload);
         onEvent(parsed);
       } catch {
-        // swallow non-JSON pings
+        // 忽略非 JSON ping
       }
     }
   }

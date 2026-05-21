@@ -1,4 +1,4 @@
-"""Endpoints for attaching files to a chat thread."""
+"""会话附件：上传到 thread，走 Files API 或 session_rag 摄入。"""
 from __future__ import annotations
 
 import shutil
