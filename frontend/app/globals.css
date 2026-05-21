@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  font-family: theme("fontFamily.sans");
+  color: theme("colors.ink");
+  background: radial-gradient(
+    circle at 10% 10%,
+    #fbe7e2,
+    #f8f3ef 45%,
+    #f3ece6 100%
+  );
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-2xl border border-border bg-card shadow-soft;
+  }
+  .panel-elev {
+    @apply rounded-2xl border border-border bg-card shadow-soft backdrop-blur-sm;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-crimson-600 px-4 py-2 text-sm font-medium text-white shadow-soft transition hover:bg-crimson-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crimson-500 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-outline {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-crimson-200 bg-card px-4 py-2 text-sm font-medium text-crimson-700 transition hover:border-crimson-300 hover:bg-crimson-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crimson-500 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-ink transition hover:bg-crimson-50 hover:text-crimson-700;
+  }
+  .input {
+    @apply w-full rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm transition focus-visible:border-crimson-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crimson-500/40;
+  }
+  .textarea {
+    @apply w-full rounded-2xl border border-border bg-card px-4 py-3 text-base shadow-sm transition focus-visible:border-crimson-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crimson-500/30;
+  }
+  .label {
+    @apply text-xs font-medium uppercase tracking-wider text-muted;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-crimson-200 bg-crimson-50 px-2.5 py-0.5 text-xs font-medium text-crimson-700;
+  }
+  .report-markdown {
+    @apply prose-sm md:prose max-w-none text-ink;
+  }
+  .report-link {
+    @apply text-crimson-700 underline-offset-2 hover:underline;
+  }
+}
+
+.report-markdown h1 {
+  @apply mb-3 mt-6 text-2xl font-semibold text-crimson-800;
+}
+.report-markdown h2 {
+  @apply mb-2 mt-5 border-l-4 border-crimson-300 pl-3 text-xl font-semibold text-crimson-800;
+}
+.report-markdown h3 {
+  @apply mb-2 mt-4 text-lg font-semibold text-crimson-700;
+}
+.report-markdown p {
+  @apply leading-7 text-ink;
+}
+.report-markdown ul,
+.report-markdown ol {
+  @apply list-disc pl-6 leading-7;
+}
+.report-markdown ol {
+  @apply list-decimal;
+}
+.report-markdown blockquote {
+  @apply border-l-2 border-crimson-300 bg-crimson-50/40 px-4 py-2 text-muted;
+}
+.report-markdown code {
+  @apply rounded bg-canvas px-1 py-0.5 text-[0.85em] text-crimson-800;
+}
+.report-markdown table {
+  @apply w-full border-collapse text-sm;
+}
+.report-markdown th,
+.report-markdown td {
+  @apply border border-border px-3 py-2 text-left;
+}
+
+/* citation chip */
+.citation-chip {
+  @apply mx-0.5 inline-flex h-[1.35em] min-w-[1.5em] items-center justify-center rounded-full bg-zinc-200/80 px-1.5 align-baseline text-[0.72em] font-semibold leading-none text-zinc-700 transition hover:bg-crimson-100 hover:text-crimson-800;
+}
+.citation-chip.web {
+  @apply bg-amber-100 text-amber-800 hover:bg-amber-200;
+}
+.citation-chip.kb {
+  @apply bg-crimson-100 text-crimson-800 hover:bg-crimson-200;
+}
+
+/* SSE thinking pulse */
+.pulse-dot {
+  @apply inline-block h-1.5 w-1.5 rounded-full bg-crimson-500;
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+.pulse-dot.delay-1 {
+  animation-delay: 0.2s;
+}
+.pulse-dot.delay-2 {
+  animation-delay: 0.4s;
+}
+@keyframes pulse-dot {
+  0%, 100% { transform: scale(0.6); opacity: 0.4; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+
+/* scrollbar tweaks */
+.scroll-pretty::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-pretty::-webkit-scrollbar-thumb {
+  background: rgba(125, 38, 28, 0.25);
+  border-radius: 6px;
+}
+.scroll-pretty::-webkit-scrollbar-track {
+  background: transparent;
+}

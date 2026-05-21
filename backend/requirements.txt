@@ -1,0 +1,50 @@
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.19
+sse-starlette==2.1.3
+
+# --- Settings & validation ---
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# --- Database ---
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg[binary]==3.2.3
+alembic==1.14.0
+greenlet==3.1.1
+
+# --- Cache ---
+redis==5.2.1
+
+# --- Vector store ---
+pymilvus==2.5.3
+
+# --- LLM SDK ---
+openai==1.59.6
+httpx==0.28.1
+tenacity==9.0.0
+
+# --- LangGraph ---
+langgraph==0.2.60
+langchain-core==0.3.28
+
+# --- Auth ---
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+PyJWT==2.10.1
+email-validator==2.2.0
+
+# --- Chinese tokenization (for query analyzer) ---
+jieba==0.42.1
+
+# --- Markdown / document parsing (MinerU — PDF/DOCX; MD/TXT direct read) ---
+mineru>=3.1.0
+
+# --- Utility ---
+python-dotenv==1.0.1
+orjson==3.10.13
+loguru==0.7.3
+aiofiles==24.1.0
+watchfiles==1.0.3
