@@ -10,27 +10,28 @@ import type { Citation } from "@/lib/api";
 interface Props {
   label: string;
   citation: Citation | undefined;
+  href?: string;
   variant?: "report-inline" | "list";
   onClick?: (citation: Citation) => void;
 }
 
-export function CitationChip({ label, citation, variant = "report-inline", onClick }: Props) {
-  const { showPreview, hidePreview } = useCitationPreview();
+export function CitationChip({ label, citation, href, variant = "report-inline", onClick }: Props) {
+  const { schedulePreview, scheduleClose } = useCitationPreview();
 
   const handleEnter = useCallback(
     (e: React.MouseEvent<HTMLAnchorElement>) => {
       if (!citation) return;
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      showPreview(citation, rect);
+      schedulePreview(citation, href || "#", rect);
     },
-    [citation, showPreview]
+    [citation, href, schedulePreview]
   );
 
-  const handleLeave = useCallback(() => hidePreview(), [hidePreview]);
+  const handleLeave = useCallback(() => scheduleClose(), [scheduleClose]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLAnchorElement>) => {
-      if (citation && onClick) {
+      if (citation && citation.source_type !== "web" && onClick) {
         e.preventDefault();
         onClick(citation);
       }
@@ -52,11 +53,12 @@ export function CitationChip({ label, citation, variant = "report-inline", onCli
   }
 
   const isWeb = citation.source_type === "web";
+  const resolvedHref = isWeb ? citation.url || href || "#" : href || "#";
 
   return (
     <a
-      href={citation.url || "#"}
-      target={citation.url ? "_blank" : undefined}
+      href={resolvedHref}
+      target={isWeb && citation.url ? "_blank" : undefined}
       rel="noreferrer noopener"
       className={cn(
         "citation-chip cursor-pointer",

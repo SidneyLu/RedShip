@@ -1,0 +1,23 @@
+# RedShip — 仅 MinerU 批转换（PDF/DOCX → 成品 Markdown）
+#
+# 流水线（可与 data compose 分机器）：
+#   1. 把 PDF/DOCX 放进 ./raw/（可含子目录）
+#   2. docker compose -f docker-compose.mineru.yml run --rm mineru
+#   3. 成品 Markdown 出现在 ./bibliography/（目录结构与 raw 对应，扩展名 .md）
+#   4. 在 data 机：docker compose -f docker-compose.data.yml up … → reindex
+#
+name: redship-mineru
+
+services:
+  mineru:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.mineru
+    environment:
+      MINERU_BACKEND: ${MINERU_BACKEND:-pipeline}
+      MINERU_TIMEOUT_SECONDS: ${MINERU_TIMEOUT_SECONDS:-600}
+      INPUT_DIR: /input
+      OUTPUT_DIR: /output
+    volumes:
+      - ./raw:/input:ro
+      - ./bibliography:/output

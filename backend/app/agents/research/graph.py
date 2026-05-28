@@ -134,13 +134,13 @@ def get_research_graph():
     graph.add_node("planner", _planner_node)
     graph.add_node("search", _search_node)
     graph.add_node("reflect", _reflect_node)
-    graph.add_node("citations", _citations_node)
+    graph.add_node("citation_builder", _citations_node)
 
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "search")
     graph.add_edge("search", "reflect")
-    graph.add_conditional_edges("reflect", _route_after_reflect, {"search": "search", "citations": "citations"})
-    graph.add_edge("citations", END)
+    graph.add_conditional_edges("reflect", _route_after_reflect, {"search": "search", "citations": "citation_builder"})
+    graph.add_edge("citation_builder", END)
 
     return graph.compile(checkpointer=get_checkpointer())
 

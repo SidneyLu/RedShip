@@ -76,7 +76,7 @@ export function KnowledgeList({ docs, loading, error, onDelete, canDelete }: Pro
                 </td>
               )}
             </tr>
-          )}
+          ))}
         </tbody>
       </table>
     </div>

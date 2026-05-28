@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     files_api_inline_max_tokens: int = Field(default=100_000, alias="FILES_API_INLINE_MAX_TOKENS")
     files_api_inline_max_bytes: int = Field(default=8_000_000, alias="FILES_API_INLINE_MAX_BYTES")
     session_doc_chunk_prefix: str = Field(default="session_", alias="SESSION_DOC_CHUNK_PREFIX")
+    bibliography_markdown_only: bool = Field(default=False, alias="BIBLIOGRAPHY_MARKDOWN_ONLY")
+    bibliography_auto_sync: bool = Field(default=False, alias="BIBLIOGRAPHY_AUTO_SYNC")
 
     # --- MinerU：PDF/DOCX 解析，CPU pipeline 后端 ---
     mineru_backend: str = Field(default="pipeline", alias="MINERU_BACKEND")

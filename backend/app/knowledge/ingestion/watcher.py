@@ -15,6 +15,7 @@ from typing import AsyncIterator
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -28,6 +29,8 @@ from app.knowledge.indexer import (
 from app.knowledge.ingestion.chunker import chunk_document, ParentChunk
 from app.knowledge.ingestion.parser import parse_document, iter_bibliography
 from app.llm.dashscope import dashscope_client
+
+MAX_PARENT_CHUNKS_PER_DOCUMENT = 24
 
 
 def _sha256(path: Path) -> str:
@@ -85,6 +88,13 @@ class SyncSummary:
             self.failures = []
 
 
+def _sample_parent_chunks(parents: list[ParentChunk]) -> list[ParentChunk]:
+    if len(parents) <= MAX_PARENT_CHUNKS_PER_DOCUMENT:
+        return parents
+    step = (len(parents) - 1) / (MAX_PARENT_CHUNKS_PER_DOCUMENT - 1)
+    return [parents[round(i * step)] for i in range(MAX_PARENT_CHUNKS_PER_DOCUMENT)]
+
+
 async def _ingest_one(
     session: AsyncSession,
     path: Path,
@@ -105,6 +115,22 @@ async def _ingest_one(
     existing = (
         await session.execute(select(Document).where(Document.relative_path == rel))
     ).scalar_one_or_none()
+    duplicate_by_hash = (
+        await session.execute(
+            select(Document).where(
+                Document.file_sha256 == file_hash,
+                Document.relative_path != rel,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if source == "bibliography" and duplicate_by_hash is not None:
+        logger.info(
+            "Skipping duplicate bibliography file {} (same SHA-256 as {})",
+            rel,
+            duplicate_by_hash.relative_path,
+        )
+        return "skipped"
 
     if (
         not force
@@ -136,10 +162,33 @@ async def _ingest_one(
     doc.error = None
     if not existing:
         session.add(doc)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            duplicate = (
+                await session.execute(select(Document).where(Document.file_sha256 == file_hash))
+            ).scalar_one_or_none()
+            if source == "bibliography" and duplicate is not None:
+                logger.info(
+                    "Skipping duplicate bibliography file {} (same SHA-256 as {})",
+                    rel,
+                    duplicate.relative_path,
+                )
+                return "skipped"
+            raise
 
     parsed = parse_document(path)
     parents: list[ParentChunk] = chunk_document(parsed)
+    sampled_count = len(parents)
+    parents = _sample_parent_chunks(parents)
+    if len(parents) < sampled_count:
+        logger.info(
+            "Sampled {} representative chunks from {} chunks for {}",
+            len(parents),
+            sampled_count,
+            rel,
+        )
     children = [c for p in parents for c in p.children]
 
     if not children:

@@ -37,7 +37,7 @@ docker compose up -d --build
 | milvus | 19530 | 向量库 |
 | etcd / minio | — | Milvus 依赖 |
 
-开发热重载：使用 `docker compose up`（会自动加载 `docker-compose.override.yml`）。
+开发热重载：使用 `docker compose up`（会自动加载 `docker-compose.override.yml`）。详见下文 [Docker Compose 说明](#docker-compose-说明)。
 
 ### 3. 访问
 
@@ -57,12 +57,18 @@ docker compose up -d --build
 ```
 RedShip/
 ├── bibliography/          # 可扩展知识库（挂载进容器）
-├── backend/               # FastAPI + LangGraph 风格编排
+├── raw/                   # MinerU 输入（PDF/DOCX，仅 mineru compose 使用）
+├── export/                # export-data.sh 默认输出目录
+├── scripts/               # 数据导出/导入脚本
+├── backend/               # FastAPI + LangGraph
 ├── frontend/              # Next.js + Tailwind（crimson/canvas 配色）
-├── legacy/                # 归档说明（本次为原地重构）
-├── docker-compose.yml
-├── PLAN.md                # 完整设计方案
-├── CHAT.md / RESPONSE.md / EMBEDDING.md / RERANK.md  # DashScope API 参考
+├── legacy/                # 归档说明
+├── docker-compose.yml           # 全栈 App
+├── docker-compose.override.yml  # 开发热重载（自动合并）
+├── docker-compose.data.yml      # 数据层建库（MD-only）
+├── docker-compose.mineru.yml    # MinerU 批转换
+├── PLAN.md
+├── CHAT.md / RESPONSE.md / EMBEDDING.md / RERANK.md
 └── .env.example
 ```
 
@@ -90,6 +96,147 @@ RESEARCH_MAX_ITERATIONS=6
 | `POST /api/admin/bibliography/sync` | 增量同步 |
 | `POST /api/admin/bibliography/reindex` | 全量重建索引 |
 | `POST /api/threads/{id}/files` | 会话附件 |
+
+## Docker Compose 说明
+
+项目提供多份 Compose 文件，按场景选用；**默认日常开发/部署只用** [`docker-compose.yml`](docker-compose.yml)。
+
+| 文件 | 用途 | 典型命令 |
+|------|------|----------|
+| [`docker-compose.yml`](docker-compose.yml) | **全栈 App**：PG + Milvus + Redis + backend + frontend | `docker compose up -d --build` |
+| [`docker-compose.override.yml`](docker-compose.override.yml) | **开发热重载**（自动合并）：backend `--reload`、frontend `npm run dev`、源码 bind-mount | 与主 compose 同目录执行 `docker compose up` 即生效 |
+| [`docker-compose.data.yml`](docker-compose.data.yml) | **数据层建库**：PG + Milvus + Redis + backend（无 frontend、无 MinerU）；文献仅成品 `.md` | `docker compose -f docker-compose.data.yml up -d --build` |
+| [`docker-compose.mineru.yml`](docker-compose.mineru.yml) | **仅 MinerU 批转换**：PDF/DOCX → Markdown，不跑 App | `docker compose -f docker-compose.mineru.yml run --rm mineru` |
+
+### 全栈（docker-compose.yml）
+
+7 个服务一次启动，`.env` 中 `POSTGRES_HOST=postgres`、`MILVUS_HOST=milvus` 等保持默认即可。
+
+```bash
+docker compose up -d --build          # 生产式镜像
+docker compose up                     # 有 override 时 backend/frontend 为热重载开发模式
+docker compose up -d redis backend frontend   # 若已从别处导入 PG/Milvus volume，可只起应用层
+```
+
+### 开发热重载（docker-compose.override.yml）
+
+存在 [`docker-compose.override.yml`](docker-compose.override.yml) 时，Docker Compose **自动合并**配置，无需 `-f`：
+
+- **backend**：`uvicorn --reload`，挂载 `./backend/app`
+- **frontend**：`npm run dev`，挂载 `./frontend/app` 等
+
+改 Python/TS 源码后保存即生效；改 `requirements.txt`、`Dockerfile` 或 `.env` 通常需重建/重启容器。
+
+显式禁用 override、只用生产式启动：
+
+```bash
+docker compose -f docker-compose.yml up -d --build
+```
+
+### 数据层建库（docker-compose.data.yml）
+
+在 **A 机**用成品 Markdown 做完 embedding，再拷到 **B 机**跑全栈 App（见 [数据迁移脚本](#数据迁移脚本)）。
+
+- 使用 [`backend/Dockerfile.data`](backend/Dockerfile.data)（**不含 MinerU**）
+- 环境变量 `BIBLIOGRAPHY_MARKDOWN_ONLY=true`，只扫描 `bibliography/` 下 `.md` / `.markdown`
+- 含：postgres、redis、milvus（etcd/minio）、backend；**不含** frontend
+
+```bash
+cp .env.example .env   # 必填 DASHSCOPE_API_KEY
+# 成品 MD 放入 ./bibliography/
+
+docker compose -f docker-compose.data.yml up -d --build
+docker compose -f docker-compose.data.yml exec backend alembic upgrade head   # 空库时
+# 全量索引：管理页或 POST /api/admin/bibliography/reindex
+
+./scripts/export-data.sh -f docker-compose.data.yml   # 导出 volume 包
+```
+
+### MinerU 批转换（docker-compose.mineru.yml）
+
+将 PDF/DOCX 转为 Markdown，输出到 `bibliography/`，供 data compose 或主 compose 索引。
+
+```bash
+mkdir -p raw bibliography
+# PDF/DOCX 放入 ./raw/（可含子目录）
+
+docker compose -f docker-compose.mineru.yml run --rm mineru
+# 输出：./bibliography/ 下与 raw 同路径的 .md 文件
+```
+
+批处理逻辑见 [`backend/scripts/mineru_batch.sh`](backend/scripts/mineru_batch.sh)。文献若已是 Markdown，**可跳过此步骤**。
+
+### 推荐离线流水线（A 机建库 → B 机开发）
+
+```text
+[可选] mineru compose     raw/ → bibliography/*.md
+         ↓
+        data compose       MD → PG + Milvus + Redis（embedding）
+         ↓
+        export-data.sh     打包 volume + bibliography
+         ↓
+        import-data.sh     B 机还原
+         ↓
+        docker compose up -d   全栈 App
+```
+
+## 数据迁移脚本
+
+脚本位于 [`scripts/`](scripts/)，在 **项目根目录**用 **WSL 或 Git Bash** 执行（Windows 原生 PowerShell 不能直接跑 bash）。
+
+| 脚本 | 作用 |
+|------|------|
+| [`scripts/export-data.sh`](scripts/export-data.sh) | 停服 → 打包 Docker volume + `bibliography/` → 生成 `manifest.json` |
+| [`scripts/import-data.sh`](scripts/import-data.sh) | 按 manifest 还原 volume 与文献目录 |
+| [`scripts/lib/data-transfer.sh`](scripts/lib/data-transfer.sh) | 公共库（一般无需直接调用） |
+
+### 备份内容
+
+| 组件 | 说明 |
+|------|------|
+| `postgres_data` | 用户、对话、文献元数据 |
+| `milvus_data` + `etcd_data` + `minio_data` | 向量索引（三者须同包拷贝） |
+| `redis_data` | embedding 缓存、联网搜索缓存、LangGraph checkpoint |
+| `backend_uploads` | 会话上传附件（主 compose 才有） |
+| `bibliography/` | 文献源文件（bind mount，单独打 tar） |
+| `postgres.pg.dump` | 可选 sidecar，便于人工检查 |
+
+**不备份**：`.env`、DashScope Files API 远端 `fileid`（跨机后会话 Files API 附件需重新上传）。
+
+### 导出
+
+```bash
+./scripts/export-data.sh
+# 默认：docker-compose.yml → ./export/redship-YYYYMMDD-HHMMSS/
+
+./scripts/export-data.sh -f docker-compose.data.yml
+./scripts/export-data.sh -o /path/to/backup
+./scripts/export-data.sh --skip-bibliography    # 仅 volume（文献另拷）
+./scripts/export-data.sh --skip-redis           # 排除 Redis（不推荐，默认含 Redis）
+./scripts/export-data.sh --skip-uploads         # 排除会话上传 volume
+./scripts/export-data.sh --no-pg-dump           # 不要 postgres.pg.dump
+```
+
+导出会 **停止** 对应 compose 的全部服务，结束后需自行 `docker compose up -d`。
+
+### 导入
+
+```bash
+./scripts/import-data.sh ./export/redship-20260522-120000/
+./scripts/import-data.sh ./export/redship-... -f docker-compose.yml
+./scripts/import-data.sh ./export/redship-... --force    # 覆盖非空 volume / bibliography
+./scripts/import-data.sh ./export/redship-... --verify   # 校验 manifest 中的 sha256
+```
+
+导入完成后：
+
+```bash
+docker compose up -d
+```
+
+**勿**在完整还原后再跑 `alembic upgrade head` 或全量 `reindex`（volume 里已有 schema 与向量）。仅当只拷了 PG、未拷 Milvus 三件套时，才需要在 B 机对 `bibliography/` 做 reindex。
+
+跨 compose 迁移示例：A 机 `-f docker-compose.data.yml` 导出，B 机 `-f docker-compose.yml` 导入（按 volume 逻辑名匹配，project 前缀可以不同）。
 
 ## 技术栈
 

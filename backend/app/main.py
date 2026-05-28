@@ -1,7 +1,7 @@
 """FastAPI 应用入口：生命周期、路由挂载、健康检查。
 
-启动顺序：日志 → Milvus 集合 → 管理员 bootstrap → 后台 bibliography 同步；
-关闭时：取消同步任务 → 关闭 DashScope HTTP → Redis → 数据库引擎。
+启动顺序：日志 → Milvus 集合 → 管理员 bootstrap → 可选后台 bibliography 同步；
+关闭时：取消可选同步任务 → 关闭 DashScope HTTP → Redis → 数据库引擎。
 """
 from __future__ import annotations
 
@@ -82,12 +82,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Admin bootstrap failed: {}", e)
 
-    # 文献同步放后台，避免 MinerU/Milvus 拖慢首包
+    # 文献同步默认由管理员显式触发；需要启动即同步时设置 BIBLIOGRAPHY_AUTO_SYNC=true。
     sync_task: asyncio.Task | None = None
-    try:
-        sync_task = asyncio.create_task(_initial_sync_task())
-    except Exception as e:
-        logger.warning("Could not schedule initial sync: {}", e)
+    if settings.bibliography_auto_sync:
+        try:
+            sync_task = asyncio.create_task(_initial_sync_task())
+        except Exception as e:
+            logger.warning("Could not schedule initial sync: {}", e)
 
     yield
 

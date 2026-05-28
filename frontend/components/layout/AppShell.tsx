@@ -11,9 +11,10 @@ import { LoginPanel } from "./LoginPanel";
 
 interface Props {
   children: ReactNode;
+  variant?: "default" | "workspace";
 }
 
-export function AppShell({ children }: Props) {
+export function AppShell({ children, variant = "default" }: Props) {
   const { user, loading, logout } = useAuth();
   const router = useRouter();
 
@@ -27,6 +28,10 @@ export function AppShell({ children }: Props) {
 
   if (!user) {
     return <LoginPanel />;
+  }
+
+  if (variant === "workspace") {
+    return <div className="min-h-screen">{children}</div>;
   }
 
   const onLogout = () => {

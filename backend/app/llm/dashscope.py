@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Iterable
 
 import httpx
 from loguru import logger
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, PermissionDeniedError
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
@@ -30,6 +30,27 @@ from app.core.redis import cache_get_json, cache_set_json
 # text-embedding-v4 单次请求最多 10 条文本
 EMBEDDING_BATCH_SIZE = 10
 EMBED_CACHE_TTL = 60 * 60  # 1 小时
+_RETRYABLE_LLM_ERRORS = (
+    httpx.HTTPError,
+    asyncio.TimeoutError,
+    APIConnectionError,
+    APITimeoutError,
+)
+_FALLBACK_CHAT_MODELS = ("qwen-turbo",)
+
+
+def _model_candidates(primary: str | None) -> list[str]:
+    model = primary or settings.chat_model
+    candidates = [model]
+    for fallback in _FALLBACK_CHAT_MODELS:
+        if fallback not in candidates:
+            candidates.append(fallback)
+    return candidates
+
+
+def _is_quota_permission_error(exc: PermissionDeniedError) -> bool:
+    text = str(exc).lower()
+    return "quota" in text or "free tier" in text or "freetieronly" in text
 
 
 @dataclass
@@ -251,11 +272,34 @@ class DashScopeClient:
         if temperature is not None:
             kwargs["temperature"] = temperature
 
-        try:
-            stream = await client.chat.completions.create(**{k: v for k, v in kwargs.items() if v is not None})
-        except Exception as e:
-            logger.exception("chat_stream call failed: {}", e)
-            raise
+        last_quota_error: PermissionDeniedError | None = None
+        for candidate in _model_candidates(model or settings.chat_model):
+            kwargs["model"] = candidate
+            try:
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(4),
+                    wait=wait_exponential(multiplier=1, min=2, max=15),
+                    retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS),
+                    reraise=True,
+                ):
+                    with attempt:
+                        stream = await client.chat.completions.create(
+                            **{k: v for k, v in kwargs.items() if v is not None}
+                        )
+                break
+            except PermissionDeniedError as e:
+                if _is_quota_permission_error(e):
+                    last_quota_error = e
+                    logger.warning("chat_stream model {} quota unavailable; trying fallback", candidate)
+                    continue
+                raise
+            except Exception as e:
+                logger.exception("chat_stream call failed: {}", e)
+                raise
+        else:
+            if last_quota_error:
+                raise last_quota_error
+            raise RuntimeError("chat_stream could not open a model stream")
 
         usage: dict[str, Any] | None = None
         async for chunk in stream:
@@ -302,8 +346,30 @@ class DashScopeClient:
             kwargs["temperature"] = temperature
         if response_format is not None:
             kwargs["response_format"] = response_format
-        resp = await client.chat.completions.create(**{k: v for k, v in kwargs.items() if v is not None})
-        return resp.model_dump()
+        last_quota_error: PermissionDeniedError | None = None
+        for candidate in _model_candidates(model or settings.chat_model):
+            kwargs["model"] = candidate
+            try:
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(4),
+                    wait=wait_exponential(multiplier=1, min=2, max=15),
+                    retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS),
+                    reraise=True,
+                ):
+                    with attempt:
+                        resp = await client.chat.completions.create(
+                            **{k: v for k, v in kwargs.items() if v is not None}
+                        )
+                        return resp.model_dump()
+            except PermissionDeniedError as e:
+                if _is_quota_permission_error(e):
+                    last_quota_error = e
+                    logger.warning("chat model {} quota unavailable; trying fallback", candidate)
+                    continue
+                raise
+        if last_quota_error:
+            raise last_quota_error
+        raise RuntimeError("unreachable chat retry state")
 
     # --- Responses API（深度研究：web_search + web_extractor）---
     async def responses_stream(
@@ -334,16 +400,29 @@ class DashScopeClient:
             body.update(extra_body)
 
         http = self._ensure_http()
-        async with http.stream(
-            "POST",
-            url,
-            json=body,
-            headers={
-                "Authorization": f"Bearer {settings.dashscope_api_key}",
-                "Accept": "text/event-stream",
-                "Content-Type": "application/json",
-            },
-        ) as resp:
+        resp: httpx.Response | None = None
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(4),
+            wait=wait_exponential(multiplier=1, min=2, max=15),
+            retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS),
+            reraise=True,
+        ):
+            with attempt:
+                request = http.build_request(
+                    "POST",
+                    url,
+                    json=body,
+                    headers={
+                        "Authorization": f"Bearer {settings.dashscope_api_key}",
+                        "Accept": "text/event-stream",
+                        "Content-Type": "application/json",
+                    },
+                )
+                resp = await http.send(request, stream=True)
+        if resp is None:
+            raise RuntimeError("Responses API stream was not opened")
+
+        try:
             if resp.status_code >= 400:
                 detail = await resp.aread()
                 raise httpx.HTTPStatusError(
@@ -373,6 +452,8 @@ class DashScopeClient:
                     ev_type = data.get("type") or current_event or "unknown"
                     data["type"] = ev_type
                     yield data
+        finally:
+            await resp.aclose()
 
     # --- Files API（小会话文档 fileid:// 注入）---
     async def upload_file(self, path: str | Path, purpose: str = "file-extract") -> str:

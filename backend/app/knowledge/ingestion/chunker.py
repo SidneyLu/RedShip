@@ -1,7 +1,7 @@
 """语义分块：父子块策略供混合检索使用。
 
-- 父块约 400–600 字，对齐 Section 边界，存 Postgres
-- 子块约 180–240 字、重叠 30 字，embed 后写入 Milvus
+- 父块约 5–7k 字，对齐 Section 边界，存 Postgres
+- 子块约 5k 字，embed 后写入 Milvus
 - 检索时用子块命中，回答时回溯父块全文作为 LLM 上下文
 """
 from __future__ import annotations
@@ -13,10 +13,10 @@ from typing import Iterable
 from app.knowledge.ingestion.parser import ParsedDocument, Section
 
 
-PARENT_TARGET = 520
-PARENT_MAX = 760
-CHILD_TARGET = 220
-CHILD_OVERLAP = 30
+PARENT_TARGET = 5500
+PARENT_MAX = 7000
+CHILD_TARGET = 5500
+CHILD_OVERLAP = 0
 
 
 _SENT_SPLIT_RE = re.compile(

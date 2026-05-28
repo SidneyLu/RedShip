@@ -1,0 +1,26 @@
+# RedShip MinerU 批处理镜像（仅 PDF/DOCX → Markdown，不含 App）
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    MINERU_BACKEND=pipeline
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 \
+        poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip && pip install "mineru>=3.1.0"
+
+COPY scripts/mineru_batch.sh /usr/local/bin/mineru-batch
+RUN chmod +x /usr/local/bin/mineru-batch
+
+WORKDIR /work
+ENTRYPOINT ["mineru-batch"]

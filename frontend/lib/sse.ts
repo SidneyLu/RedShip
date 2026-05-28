@@ -54,6 +54,7 @@ export async function streamSSE(
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r\n/g, "\n");
 
     let idx: number;
     while ((idx = buffer.indexOf("\n\n")) >= 0) {

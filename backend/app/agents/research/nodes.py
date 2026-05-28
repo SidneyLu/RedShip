@@ -75,6 +75,8 @@ async def _run_subquery(sub_question: str, iteration: int) -> tuple[list[Researc
             extra_body={"top_p": 0.9},
         ):
             etype = event.get("type", "")
+            if etype == "error":
+                raise RuntimeError(str(event.get("message") or event.get("code") or "Responses API error"))
             if etype.endswith("web_search_call.completed") or "search" in etype.lower():
                 # DashScope returns the search results in event["results"] or event["output"]
                 results = event.get("results") or event.get("output") or []
@@ -117,8 +119,84 @@ async def _run_subquery(sub_question: str, iteration: int) -> tuple[list[Researc
             elif etype.endswith("response.completed") or etype == "response.completed":
                 break
     except Exception:
-        logger.exception("Responses API sub-query failed (q={!r})", sub_question)
-        raise
+        logger.warning("Responses API sub-query failed; falling back to chat search (q={!r})", sub_question)
+        return await _run_subquery_with_chat_search(sub_question, iteration)
+
+    return evidence, search_hits
+
+
+async def _run_subquery_with_chat_search(
+    sub_question: str, iteration: int
+) -> tuple[list[ResearchEvidence], list[dict[str, Any]]]:
+    """Fallback research search via DashScope Chat Completions enable_search."""
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是党史深度研究检索助手。请联网搜索权威中文来源，"
+                "提炼与问题直接相关的材料，并保留来源元数据。"
+            ),
+        },
+        {"role": "user", "content": sub_question},
+    ]
+    summary_parts: list[str] = []
+    search_hits: list[dict[str, Any]] = []
+
+    async for chunk in dashscope_client.chat_stream(
+        messages=messages,
+        enable_search=True,
+        search_strategy="agent_max",
+        forced_search=True,
+        extra_body={"enable_source": True},
+        temperature=0.2,
+    ):
+        ctype = chunk.get("type")
+        if ctype == "delta":
+            summary_parts.append(chunk.get("content", ""))
+        elif ctype == "search_info":
+            data = chunk.get("data") or {}
+            for raw in data.get("search_results") or []:
+                if isinstance(raw, dict):
+                    search_hits.append(
+                        {
+                            "title": raw.get("title", ""),
+                            "url": raw.get("url", ""),
+                            "snippet": raw.get("snippet", ""),
+                            "site_name": raw.get("site_name", ""),
+                        }
+                    )
+        elif ctype == "done":
+            break
+
+    summary = "".join(summary_parts).strip()
+    evidence: list[ResearchEvidence] = []
+    for hit in search_hits[: settings.research_per_subquery_extracts]:
+        snippet = str(hit.get("snippet") or summary)[:600]
+        content = "\n\n".join(part for part in [snippet, summary] if part)
+        evidence.append(
+            ResearchEvidence(
+                sub_question=sub_question,
+                iteration=iteration,
+                url=str(hit.get("url") or ""),
+                title=str(hit.get("title") or hit.get("site_name") or "联网搜索结果"),
+                snippet=snippet,
+                content=content,
+                site_name=str(hit.get("site_name") or ""),
+            )
+        )
+
+    if not evidence and summary:
+        evidence.append(
+            ResearchEvidence(
+                sub_question=sub_question,
+                iteration=iteration,
+                url="",
+                title="联网搜索摘要",
+                snippet=summary[:600],
+                content=summary,
+                site_name="DashScope",
+            )
+        )
 
     return evidence, search_hits
 

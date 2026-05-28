@@ -67,8 +67,19 @@ async def query_analyzer(state: RagState) -> dict[str, Any]:
     )
     content = resp["choices"][0]["message"].get("content", "{}")
     data = _safe_json_loads(content)
-    if not data:
-        raise ValueError("query_analyzer returned empty or invalid JSON")
+    if not isinstance(data, dict) or not data:
+        logger.warning("query_analyzer returned invalid JSON; using default kb route")
+        return {
+            "rewritten_query": query,
+            "entities": {
+                "persons": [],
+                "organizations": [],
+                "events": [],
+                "timeframe": "",
+                "era": "",
+            },
+            "route": "kb",
+        }
     route = (data.get("route") or "kb").lower()
     if route not in {"kb", "web", "hybrid"}:
         route = "kb"

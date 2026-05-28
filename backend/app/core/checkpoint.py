@@ -20,11 +20,40 @@ from app.core.redis import cache_get_json, cache_set_json
 
 _CKPT_TTL = 7 * 24 * 3600
 _SERDE = JsonPlusSerializer()
+_DROP = object()
 
 
 def _key(thread_id: str) -> str:
     """Redis 键：与 thread UUID 一一对应。"""
     return f"ckpt:{thread_id}"
+
+
+def _json_safe(value: Any) -> Any:
+    """Return a JSON-serializable copy, dropping runtime-only objects."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            safe_item = _json_safe(item)
+            if safe_item is not _DROP:
+                cleaned[str(key)] = safe_item
+        return cleaned
+    if isinstance(value, (list, tuple, set)):
+        cleaned_list = []
+        for item in value:
+            safe_item = _json_safe(item)
+            if safe_item is not _DROP:
+                cleaned_list.append(safe_item)
+        return cleaned_list
+    return _DROP
+
+
+def _safe_parent_config(config: dict[str, Any]) -> dict[str, Any]:
+    configurable = _json_safe(config.get("configurable") or {})
+    if not isinstance(configurable, dict):
+        configurable = {}
+    return {"configurable": configurable}
 
 
 class RedisCheckpointSaver(BaseCheckpointSaver):
@@ -102,8 +131,8 @@ class RedisCheckpointSaver(BaseCheckpointSaver):
         thread_id = config["configurable"]["thread_id"]
         payload = {
             "checkpoint_b64": base64.b64encode(self.serde.dumps(checkpoint)).decode("ascii"),
-            "metadata": metadata,
-            "parent_config": config.get("configurable"),
+            "metadata": _json_safe(metadata) or {},
+            "parent_config": _safe_parent_config(config),
         }
         await cache_set_json(_key(thread_id), payload, ttl_seconds=_CKPT_TTL)
         return config

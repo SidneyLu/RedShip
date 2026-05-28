@@ -57,6 +57,7 @@ class RetrievedPassage:
             "doc_id": self.doc_id,
             "title": self.document_title,
             "heading_path": self.heading_path,
+            "parent_index": self.parent_index,
             "source_type": self.source,
             "snippet": self.snippet[:280],
             "highlight_text": self.snippet,
@@ -65,6 +66,8 @@ class RetrievedPassage:
             "era": self.era,
             "series": self.series,
             "score": round(self.score, 4),
+            "locator_label": self.heading_path or self.relative_path or self.document_title,
+            "previewable": True,
         }
 
 

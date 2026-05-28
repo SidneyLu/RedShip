@@ -221,11 +221,36 @@ async def build_session_system_messages(
             )
         )
     ).scalars().all()
-    return [
-        {"role": "system", "content": f"fileid://{r.dashscope_file_id}"}
-        for r in rows
-        if r.dashscope_file_id
-    ]
+    messages: list[dict[str, str]] = []
+    for row in rows:
+        if row.dashscope_file_id:
+            messages.append({"role": "system", "content": f"fileid://{row.dashscope_file_id}"})
+        inline = _inline_text_attachment(row)
+        if inline:
+            messages.append(inline)
+    return messages
+
+
+def _inline_text_attachment(row: SessionFile) -> dict[str, str] | None:
+    """Expose small text attachments to models that cannot read fileid://."""
+    if not row.storage_path:
+        return None
+    path = Path(row.storage_path)
+    if path.suffix.lower() not in {".md", ".markdown", ".txt", ".text"}:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    max_chars = 20_000
+    clipped = text[:max_chars]
+    suffix = "\n\n（附件内容已截断）" if len(text) > max_chars else ""
+    return {
+        "role": "system",
+        "content": f"会话附件《{row.filename}》内容：\n{clipped}{suffix}",
+    }
 
 
 async def session_namespace_filter(

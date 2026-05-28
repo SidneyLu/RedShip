@@ -3,7 +3,8 @@
 /** 主聊天区：线程列表、消息流、模式切换（chat/research）、Composer 与 SSE 流。 */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
+import { Loader2, MessageSquare, Sparkles } from "lucide-react";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ResearchProgress } from "./ResearchProgress";
@@ -11,7 +12,6 @@ import { ThreadList } from "@/components/chat/ThreadList";
 import { useChatStream } from "./useChatStream";
 import { api, type Citation, type Message, type ThreadWithMessages, type Thread } from "@/lib/api";
 import { useAuth } from "@/components/providers/AuthProvider";
-import { useToast } from "@/components/providers/ToastProvider";
 
 interface ChatInterfaceProps {
   initialThreadId?: string | null;
@@ -20,8 +20,6 @@ interface ChatInterfaceProps {
 export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
   const { user } = useAuth();
   const router = useRouter();
-  const search = useSearchParams();
-  const { show } = useToast();
   const { state, send, cancel } = useChatStream();
 
   const [mode, setMode] = useState<"chat" | "research">("chat");
@@ -95,12 +93,16 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
     [router, thread, state.threadId, state.assistantMessageId]
   );
 
-  const onNewThread = () => {
-    setThreadId(null);
-    setThread(null);
-    setStagedQuery(null);
-    router.replace("/");
-  };
+  const startNewThread = useCallback(
+    (nextMode: "chat" | "research") => {
+      setMode(nextMode);
+      setThreadId(null);
+      setThread(null);
+      setStagedQuery(null);
+      router.replace("/");
+    },
+    [router]
+  );
 
   const onPickThread = (t: Thread) => {
     setThreadId(t.id);
@@ -121,61 +123,97 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
     }
   }, [threadId, mode, router, reloadThreads]);
 
+  const activeTitle = thread?.title || (mode === "research" ? "新的深度研究" : "新的快速问答");
+  const visibleMessageCount =
+    messages.length + (stagedQuery ? 1 : 0) + (state.loading ? 1 : 0);
+
   return (
-    <div className="grid h-full min-h-[calc(100vh-4rem)] grid-cols-1 gap-4 lg:grid-cols-[260px_1fr_320px]">
-      <ThreadList
-        threads={threads}
-        activeId={threadId}
-        onPick={onPickThread}
-        onNew={onNewThread}
-        onChange={reloadThreads}
-      />
-
-      <section className="flex h-full min-h-[70vh] flex-col gap-4">
-        <div className="panel flex-1 overflow-y-auto px-4 py-2 scroll-pretty">
-          {messages.length === 0 && !stagedQuery && !state.loading ? (
-            <EmptyState mode={mode} />
-          ) : (
-            <MessageList
-              messages={messages}
-              streaming={
-                state.loading || state.tokens
-                  ? {
-                      id: state.assistantMessageId || undefined,
-                      tokens: state.tokens,
-                      citations: state.citations,
-                      mode,
-                    }
-                  : null
-              }
-              stagedQuery={stagedQuery}
-              onCitationClick={handleCitationClick}
-            />
-          )}
-        </div>
-        <Composer
-          mode={mode}
-          onModeChange={setMode}
-          threadId={thread?.id || state.threadId}
-          loading={state.loading}
-          onSend={handleSend}
-          onCancel={cancel}
-          onEnsureThread={ensureThread}
+    <main className="min-h-screen p-2 md:p-3">
+      <div className="flex min-h-[calc(100vh-1rem)] items-start gap-3">
+        <ThreadList
+          threads={threads}
+          activeId={threadId}
+          onPick={onPickThread}
+          onNewChat={() => startNewThread("chat")}
+          onNewResearch={() => startNewThread("research")}
+          onChange={reloadThreads}
         />
-      </section>
 
-      <aside className="hidden lg:block">
-        {mode === "research" || state.researchSteps.length > 0 ? (
-          <ResearchProgress
-            steps={state.researchSteps}
-            loading={state.loading}
-            stage={state.stage}
-          />
-        ) : (
-          <KnowledgeAside />
-        )}
-      </aside>
-    </div>
+        <section className="flex min-h-[calc(100vh-1rem)] min-w-0 flex-1 flex-col">
+          <div className="panel flex min-h-[calc(100vh-1rem)] flex-col p-3 md:p-4">
+            <header className="rounded-2xl border border-crimson-100 bg-card p-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-crimson-700">
+                    研究工作台
+                  </p>
+                  <h2 className="mt-1 truncate text-2xl font-semibold text-ink">
+                    {activeTitle}
+                  </h2>
+                  <p className="mt-2 text-sm text-muted">
+                    {mode === "research" ? "深度研究" : "快速问答"} · {visibleMessageCount} 条消息
+                    {state.stage ? ` · ${state.stage}` : ""}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="chip">
+                    {mode === "research" ? <Sparkles className="h-3.5 w-3.5" /> : <MessageSquare className="h-3.5 w-3.5" />}
+                    {mode === "research" ? "深度研究" : "快速问答"}
+                  </span>
+                  {state.loading ? (
+                    <span className="chip">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      生成中
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            </header>
+
+            <ResearchProgress
+              steps={state.researchSteps}
+              loading={state.loading && mode === "research"}
+              stage={state.stage}
+              compact
+            />
+
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1 scroll-pretty">
+              {messages.length === 0 && !stagedQuery && !state.loading ? (
+                <EmptyState mode={mode} />
+              ) : (
+                <MessageList
+                  messages={messages}
+                  streaming={
+                    state.loading
+                      ? {
+                          id: state.assistantMessageId || undefined,
+                          tokens: state.tokens,
+                          citations: state.citations,
+                          mode,
+                        }
+                      : null
+                  }
+                  stagedQuery={stagedQuery}
+                  onCitationClick={handleCitationClick}
+                />
+              )}
+            </div>
+
+            <div className="mt-4">
+              <Composer
+                mode={mode}
+                onModeChange={setMode}
+                threadId={thread?.id || state.threadId}
+                loading={state.loading}
+                onSend={handleSend}
+                onCancel={cancel}
+                onEnsureThread={ensureThread}
+              />
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
   );
 }
 
@@ -211,24 +249,6 @@ function EmptyState({ mode }: { mode: "chat" | "research" }) {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function KnowledgeAside() {
-  return (
-    <div className="panel p-4">
-      <div className="text-sm font-semibold text-crimson-800">知识库速览</div>
-      <p className="mt-2 text-xs leading-6 text-muted">
-        日新册基于 <code className="rounded bg-canvas px-1 text-crimson-700">bibliography/</code>{" "}
-        目录下的党史文献增量构建，支持 PDF / Markdown / DOCX 自动入库。
-      </p>
-      <p className="mt-2 text-xs leading-6 text-muted">
-        检索流程：Milvus 混合检索（ANN + BM25）→ qwen3-rerank 精排 → 父块回溯 → qwen3-plus 流式生成。
-      </p>
-      <a className="btn-outline mt-4 w-full justify-center" href="/knowledge">
-        进入知识库管理
-      </a>
     </div>
   );
 }

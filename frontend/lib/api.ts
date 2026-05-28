@@ -110,6 +110,50 @@ export interface Citation {
   series?: string | null;
   relative_path?: string | null;
   doc_id?: string | null;
+  parent_index?: number | null;
+  locator_label?: string | null;
+  previewable?: boolean | null;
+  score?: number | null;
+}
+
+export interface CitationPreviewCard {
+  citation_id: string;
+  title: string;
+  subtitle?: string | null;
+  locator_label?: string | null;
+  excerpt?: string | null;
+  score?: number | null;
+  trust_score: number;
+  href: string;
+  external_url?: string | null;
+  previewable: boolean;
+}
+
+export interface CitationPreviewPage {
+  citation_id: string;
+  title: string;
+  subtitle?: string | null;
+  locator_label?: string | null;
+  excerpt?: string | null;
+  content?: string | null;
+  highlight_text?: string | null;
+  score?: number | null;
+  trust_score: number;
+  preview_mode: "text" | "pdf" | "image" | "web";
+  page_hint?: number | null;
+  external_url?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export function getThreadMessageCitationPreview(
+  threadId: string,
+  messageId: string,
+  citationId: string,
+  detail: "card" | "page"
+) {
+  return api<CitationPreviewCard | CitationPreviewPage>(
+    `/api/threads/${threadId}/messages/${messageId}/citations/${citationId}/preview?detail=${detail}`
+  );
 }
 
 export interface Message {

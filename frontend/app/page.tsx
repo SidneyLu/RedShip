@@ -15,7 +15,7 @@ function ChatPage() {
 
 export default function Page() {
   return (
-    <AppShell>
+    <AppShell variant="workspace">
       <Suspense fallback={<div className="text-muted">正在加载对话…</div>}>
         <ChatPage />
       </Suspense>

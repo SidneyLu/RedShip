@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -88,8 +88,13 @@ async def upload_file(
     return _to_out(row)
 
 
-@router.delete("/{thread_id}/files/{file_id}", status_code=204)
-async def delete_file(thread_id: str, file_id: str, user: CurrentUser, session: DbSession) -> None:
+@router.delete(
+    "/{thread_id}/files/{file_id}",
+    status_code=204,
+    response_class=Response,
+    response_model=None,
+)
+async def delete_file(thread_id: str, file_id: str, user: CurrentUser, session: DbSession) -> Response:
     t = (
         await session.execute(select(Thread).where(Thread.id == thread_id, Thread.user_id == user.id))
     ).scalar_one_or_none()
@@ -116,3 +121,4 @@ async def delete_file(thread_id: str, file_id: str, user: CurrentUser, session: 
             pass
     await session.delete(row)
     await session.commit()
+    return Response(status_code=204)

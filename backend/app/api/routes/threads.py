@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
@@ -123,8 +123,13 @@ async def update_thread(thread_id: str, payload: ThreadUpdate, user: CurrentUser
     return _thread_out(t)
 
 
-@router.delete("/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_thread(thread_id: str, user: CurrentUser, session: DbSession) -> None:
+@router.delete(
+    "/{thread_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+)
+async def delete_thread(thread_id: str, user: CurrentUser, session: DbSession) -> Response:
     t = (await session.execute(select(Thread).where(Thread.id == thread_id, Thread.user_id == user.id))).scalar_one_or_none()
     if not t:
         raise HTTPException(status_code=404, detail="Thread not found")
@@ -136,3 +141,4 @@ async def delete_thread(thread_id: str, user: CurrentUser, session: DbSession) -
     await session.execute(delete(SessionFile).where(SessionFile.thread_id == t.id))
     await session.delete(t)
     await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

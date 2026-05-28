@@ -1,0 +1,269 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --duration-exit: 150ms;
+  --duration-enter: 210ms;
+  --duration-move: 400ms;
+}
+
+@keyframes fade {
+  from {
+    filter: blur(3px);
+    opacity: 0;
+  }
+  to {
+    filter: blur(0);
+    opacity: 1;
+  }
+}
+
+@keyframes slide {
+  from {
+    translate: var(--slide-offset);
+  }
+  to {
+    translate: 0;
+  }
+}
+
+@keyframes timeline-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes timeline-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(14, 165, 233, 0);
+  }
+}
+
+html[data-vt-nav='forward']::view-transition-old(root) {
+  --slide-offset: -60px;
+  animation:
+    var(--duration-exit) ease-in both fade reverse,
+    var(--duration-move) ease-in-out both slide reverse;
+}
+
+html[data-vt-nav='forward']::view-transition-new(root) {
+  --slide-offset: 60px;
+  animation:
+    var(--duration-enter) ease-out var(--duration-exit) both fade,
+    var(--duration-move) ease-in-out both slide;
+}
+
+html[data-vt-nav='back']::view-transition-old(root) {
+  --slide-offset: 60px;
+  animation:
+    var(--duration-exit) ease-in both fade reverse,
+    var(--duration-move) ease-in-out both slide reverse;
+}
+
+html[data-vt-nav='back']::view-transition-new(root) {
+  --slide-offset: -60px;
+  animation:
+    var(--duration-enter) ease-out var(--duration-exit) both fade,
+    var(--duration-move) ease-in-out both slide;
+}
+
+.vt-persistent {
+  view-transition-name: persistent-nav;
+}
+
+::view-transition-group(persistent-nav) {
+  animation: none;
+  z-index: 100;
+}
+
+::view-transition-old(persistent-nav) {
+  display: none;
+}
+
+::view-transition-new(persistent-nav) {
+  animation: none;
+}
+
+::view-transition-group(report-preview-card) {
+  animation-duration: 220ms;
+}
+
+::view-transition-old(report-preview-card),
+::view-transition-new(report-preview-card) {
+  animation: 220ms ease both fade;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(*),
+  ::view-transition-new(*),
+  ::view-transition-group(*) {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+  }
+
+  .timeline-node-enter,
+  .timeline-dot-active,
+  .timeline-chip-enter,
+  .timeline-browser-enter {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+.timeline-node-enter {
+  animation: timeline-enter 220ms ease both;
+}
+
+.timeline-dot-active {
+  animation: timeline-pulse 1.8s ease-in-out infinite;
+}
+
+.timeline-chip-enter {
+  opacity: 0;
+  animation: timeline-enter 180ms ease forwards;
+}
+
+.timeline-browser-enter {
+  opacity: 0;
+  animation: timeline-enter 220ms ease forwards;
+}
+
+html,
+body {
+  min-height: 100%;
+  background: radial-gradient(circle at 10% 10%, #fbe7e2, #f8f3ef 45%, #f3ece6 100%);
+  color: #2b2b2b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.panel {
+  @apply rounded-2xl bg-card/95 border border-crimson-100 shadow-soft;
+}
+
+.btn-primary {
+  @apply inline-flex min-h-[36px] items-center justify-center rounded-xl bg-crimson-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-crimson-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crimson-300 focus-visible:ring-offset-1;
+}
+
+.btn-outline {
+  @apply inline-flex min-h-[36px] items-center justify-center rounded-xl border border-crimson-300 px-4 py-2 text-sm font-semibold text-crimson-700 transition-colors hover:bg-crimson-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crimson-300 focus-visible:ring-offset-1;
+}
+
+.input {
+  @apply w-full rounded-xl border border-crimson-200 bg-white px-3 py-2 text-sm text-zinc-800 outline-none focus:border-crimson-500 focus:ring-2 focus:ring-crimson-200;
+}
+
+.label {
+  @apply text-xs font-semibold uppercase tracking-wide text-crimson-700;
+}
+
+.report-markdown {
+  @apply text-[15px] leading-8 text-zinc-700;
+}
+
+.report-markdown > :first-child {
+  @apply mt-0;
+}
+
+.report-h1,
+.report-h2,
+.report-h3,
+.report-h4 {
+  @apply font-semibold text-zinc-900;
+}
+
+.report-h1 {
+  @apply mt-0 mb-6 text-[2rem] leading-tight tracking-[-0.02em];
+}
+
+.report-h2 {
+  @apply mt-12 mb-5 border-t border-zinc-200 pt-8 text-[1.55rem] leading-tight;
+}
+
+.report-h3 {
+  @apply mt-8 mb-3 text-[1.18rem] leading-7;
+}
+
+.report-h4 {
+  @apply mt-6 mb-2 text-base leading-7 text-zinc-800;
+}
+
+.report-markdown p {
+  @apply my-4;
+}
+
+.report-markdown ul,
+.report-markdown ol {
+  @apply my-4 pl-6;
+}
+
+.report-markdown ul {
+  @apply list-disc;
+}
+
+.report-markdown ol {
+  @apply list-decimal;
+}
+
+.report-markdown blockquote {
+  @apply my-3 border-l-4 border-crimson-200 bg-crimson-50/50 px-3 py-2 text-zinc-600;
+}
+
+.report-link {
+  @apply text-crimson-700 underline decoration-crimson-300 underline-offset-4 transition-colors hover:text-crimson-800;
+}
+
+.report-markdown strong {
+  @apply font-semibold text-zinc-900;
+}
+
+.report-markdown code {
+  @apply rounded bg-zinc-100 px-1 py-0.5 text-[0.85em] text-zinc-800;
+}
+
+.report-markdown pre {
+  @apply my-3 overflow-x-auto rounded-xl border border-zinc-200 bg-zinc-900 p-3 text-zinc-100;
+}
+
+.report-markdown pre code {
+  @apply bg-transparent p-0 text-inherit;
+}
+
+.report-markdown table {
+  @apply my-0 w-full min-w-[520px] border-collapse;
+}
+
+.report-markdown th,
+.report-markdown td {
+  @apply border border-zinc-200 px-4 py-3 text-left align-top;
+}
+
+.report-markdown thead th {
+  @apply bg-zinc-50 font-semibold text-zinc-800;
+}
+
+.report-markdown hr {
+  @apply my-8 border-zinc-200;
+}
+
+.report-markdown li {
+  @apply my-1.5;
+}
+
+.report-markdown thead + tbody tr:nth-child(even) {
+  @apply bg-zinc-50/60;
+}

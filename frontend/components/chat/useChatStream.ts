@@ -130,7 +130,11 @@ export function useChatStream() {
                 setState((s) => ({ ...s, reasoning }));
                 break;
               case "research_step":
-                researchSteps.push({ ...event, timestamp: Date.now() });
+                researchSteps.push({
+                  ...(event as Partial<ResearchStep>),
+                  step: String(event.step || "research_step"),
+                  timestamp: Date.now(),
+                });
                 setState((s) => ({ ...s, researchSteps: [...researchSteps] }));
                 break;
               case "final_state":

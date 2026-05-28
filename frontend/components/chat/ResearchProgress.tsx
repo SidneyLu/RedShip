@@ -33,10 +33,12 @@ export function ResearchProgress({
   steps,
   loading,
   stage,
+  compact = false,
 }: {
   steps: ResearchStep[];
   loading: boolean;
   stage: string | null;
+  compact?: boolean;
 }) {
   const filteredSteps = useMemo(
     () => steps.filter((s) => s.step !== "extracted" || s.title || s.url),
@@ -44,6 +46,49 @@ export function ResearchProgress({
   );
 
   if (!loading && filteredSteps.length === 0) return null;
+
+  if (compact) {
+    const visibleSteps = filteredSteps.slice(-5);
+    return (
+      <section className="mt-3 rounded-2xl border border-border bg-canvas/60 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-crimson-800">
+            <Sparkles className="h-4 w-4" />
+            深度研究进度
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted">
+            {stage ? <span>当前阶段：{stage}</span> : null}
+            {loading ? <Loader2 className="h-4 w-4 animate-spin text-crimson-600" /> : <span>已完成</span>}
+          </div>
+        </div>
+        {visibleSteps.length > 0 ? (
+          <div className="scroll-pretty mt-3 flex gap-2 overflow-x-auto pb-1">
+            {visibleSteps.map((s, idx) => {
+              const Icon = stepIcon(s.step);
+              const label = STEP_LABELS[s.step] || s.step;
+              return (
+                <div
+                  key={`${s.step}-${idx}`}
+                  className="flex min-w-[180px] items-start gap-2 rounded-xl border border-border bg-card px-3 py-2 text-xs"
+                >
+                  <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-crimson-700" />
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-ink">
+                      {label}
+                      {s.iteration ? <span className="ml-1 text-muted">第 {s.iteration} 轮</span> : null}
+                    </div>
+                    <div className="mt-0.5 truncate text-muted">
+                      {s.title || s.query || s.plan_summary || s.snippet || "处理中"}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+      </section>
+    );
+  }
 
   return (
     <aside className="panel max-h-[70vh] w-full overflow-hidden">

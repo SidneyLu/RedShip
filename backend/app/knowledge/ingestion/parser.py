@@ -162,11 +162,19 @@ def parse_document(path: Path) -> ParsedDocument:
 
 
 SUPPORTED_EXTENSIONS = {".md", ".markdown", ".pdf", ".docx", ".txt", ".text"}
+MARKDOWN_ONLY_EXTENSIONS = {".md", ".markdown"}
+
+
+def bibliography_extensions() -> set[str]:
+    if settings.bibliography_markdown_only:
+        return MARKDOWN_ONLY_EXTENSIONS
+    return SUPPORTED_EXTENSIONS
 
 
 def iter_bibliography(root: Path) -> Iterable[Path]:
     if not root.exists():
         return
+    exts = bibliography_extensions()
     for p in root.rglob("*"):
-        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS:
+        if p.is_file() and p.suffix.lower() in exts:
             yield p

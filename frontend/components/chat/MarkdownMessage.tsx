@@ -53,6 +53,7 @@ export function MarkdownMessage({
               <CitationChip
                 label={childText}
                 citation={citation}
+                href={hrefStr}
                 onClick={onCitationClick}
                 variant="report-inline"
               />

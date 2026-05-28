@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete, desc, func, select
 
@@ -167,8 +167,13 @@ async def upload_document(
     return _doc_out(doc)
 
 
-@router.delete("/documents/{document_id}", status_code=204)
-async def delete_document(document_id: str, admin: AdminUser, session: DbSession) -> None:
+@router.delete(
+    "/documents/{document_id}",
+    status_code=204,
+    response_class=Response,
+    response_model=None,
+)
+async def delete_document(document_id: str, admin: AdminUser, session: DbSession) -> Response:
     """Remove an uploaded knowledge document and its Milvus vectors."""
     doc = (await session.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
     if not doc:
@@ -194,3 +199,4 @@ async def delete_document(document_id: str, admin: AdminUser, session: DbSession
     )
     await session.delete(doc)
     await session.commit()
+    return Response(status_code=204)

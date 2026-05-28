@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
@@ -14,14 +14,24 @@ from app.db.models import User
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-class RegisterPayload(BaseModel):
-    email: EmailStr
+class EmailPayload(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        email = value.strip().lower()
+        if "@" not in email or email.startswith("@") or email.endswith("@"):
+            raise ValueError("Invalid email address")
+        return email
+
+
+class RegisterPayload(EmailPayload):
     password: str = Field(min_length=6, max_length=128)
     display_name: str | None = None
 
 
-class LoginPayload(BaseModel):
-    email: EmailStr
+class LoginPayload(EmailPayload):
     password: str
 
 

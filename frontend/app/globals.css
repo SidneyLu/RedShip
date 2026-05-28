@@ -53,7 +53,7 @@ body {
     @apply inline-flex items-center gap-1 rounded-full border border-crimson-200 bg-crimson-50 px-2.5 py-0.5 text-xs font-medium text-crimson-700;
   }
   .report-markdown {
-    @apply prose-sm md:prose max-w-none text-ink;
+    @apply max-w-none text-sm text-ink md:text-base;
   }
   .report-link {
     @apply text-crimson-700 underline-offset-2 hover:underline;
