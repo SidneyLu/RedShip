@@ -80,8 +80,8 @@ RedShip/
 
 ```env
 DASHSCOPE_API_KEY=sk-...
-CHAT_MODEL=qwen3.6-plus
-RESEARCH_MODEL=qwen3.6-plus
+CHAT_MODEL=qwen3.5-flash
+RESEARCH_MODEL=qwen3.5-plus
 EMBEDDING_MODEL=text-embedding-v4
 RERANK_MODEL=qwen3-rerank
 RESEARCH_MAX_ITERATIONS=6

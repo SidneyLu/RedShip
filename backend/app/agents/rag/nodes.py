@@ -49,7 +49,7 @@ def _safe_json_loads(text: str) -> dict[str, Any]:
 async def query_analyzer(state: RagState) -> dict[str, Any]:
     """分析用户问题并决定检索路由。
 
-    调用 qwen3.6-plus，要求 JSON：rewritten、route(kb|web|hybrid)、实体字段。
+    调用 CHAT_MODEL（默认 qwen3.5-flash），要求 JSON：rewritten、route(kb|web|hybrid)、实体字段。
     写入 rewritten_query、entities、route。
     """
     query = state["query"]

@@ -19,9 +19,12 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+import base64
+import mimetypes
+
 import dashscope
 import httpx
-from dashscope import AioGeneration, AioTextReRank, TextEmbedding
+from dashscope import AioGeneration, AioMultiModalConversation, AioTextReRank, TextEmbedding
 from loguru import logger
 from tenacity import (
     AsyncRetrying,
@@ -42,6 +45,25 @@ _DEFAULT_RERANK_INSTRUCT = (
     "Given a Chinese Communist Party history research query, "
     "retrieve the most relevant passages that answer the query."
 )
+# Qwen3.5+ 统一多模态模型必须走 multimodal-generation，用 Generation 会报 url error
+_MULTIMODAL_MODEL_PREFIXES = ("qwen3.5", "qwen3.6", "qwen3.7", "qwen3-5", "qwen3-6", "qwen3-7")
+
+
+def _is_multimodal_model(model: str) -> bool:
+    name = (model or "").strip().lower().replace("_", "-")
+    return any(name.startswith(prefix) for prefix in _MULTIMODAL_MODEL_PREFIXES)
+
+
+def _to_multimodal_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """将纯文本 content 转为 MultiModalConversation 的 [{text}] 列表格式。"""
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        item = dict(msg)
+        content = item.get("content")
+        if isinstance(content, str):
+            item["content"] = [{"text": content}]
+        out.append(item)
+    return out
 
 
 class DashScopeAPIError(RuntimeError):
@@ -324,7 +346,7 @@ class DashScopeClient:
             out.append(RerankResult(index=idx, score=score, text=text))
         return out
 
-    # --- Chat（Generation）---
+    # --- Chat（Generation 或 MultiModalConversation）---
     async def chat_stream(
         self,
         messages: list[dict[str, Any]],
@@ -336,7 +358,10 @@ class DashScopeClient:
         forced_search: bool = False,
         extra_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """流式 Generation；产出 delta / reasoning / search_info / done。"""
+        """流式对话；产出 delta / reasoning / search_info / done。
+
+        qwen3.5/3.6 等统一多模态模型走 AioMultiModalConversation，其余走 AioGeneration。
+        """
         _ensure_sdk_configured()
         kwargs: dict[str, Any] = {
             "messages": messages,
@@ -368,6 +393,9 @@ class DashScopeClient:
         stream = None
         for candidate in _model_candidates(model or settings.chat_model):
             call_kwargs = {**kwargs, "model": candidate}
+            use_mm = _is_multimodal_model(candidate)
+            if use_mm:
+                call_kwargs["messages"] = _to_multimodal_messages(messages)
             try:
                 async for attempt in AsyncRetrying(
                     stop=stop_after_attempt(4),
@@ -376,7 +404,10 @@ class DashScopeClient:
                     reraise=True,
                 ):
                     with attempt:
-                        stream = await AioGeneration.call(**call_kwargs)
+                        if use_mm:
+                            stream = await AioMultiModalConversation.call(**call_kwargs)
+                        else:
+                            stream = await AioGeneration.call(**call_kwargs)
                 break
             except Exception as e:
                 if _is_quota_error(e):
@@ -429,7 +460,7 @@ class DashScopeClient:
         extra_body: dict[str, Any] | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """非流式 Generation；返回 OpenAI-like dict 供 query_analyzer / planner 使用。"""
+        """非流式对话；返回 OpenAI-like dict 供 query_analyzer / planner 使用。"""
         _ensure_sdk_configured()
         kwargs: dict[str, Any] = {
             "messages": messages,
@@ -446,6 +477,9 @@ class DashScopeClient:
         last_quota_error: BaseException | None = None
         for candidate in _model_candidates(model or settings.chat_model):
             call_kwargs = {**kwargs, "model": candidate}
+            use_mm = _is_multimodal_model(candidate)
+            if use_mm:
+                call_kwargs["messages"] = _to_multimodal_messages(messages)
             try:
                 async for attempt in AsyncRetrying(
                     stop=stop_after_attempt(4),
@@ -454,7 +488,10 @@ class DashScopeClient:
                     reraise=True,
                 ):
                     with attempt:
-                        resp = await AioGeneration.call(**call_kwargs)
+                        if use_mm:
+                            resp = await AioMultiModalConversation.call(**call_kwargs)
+                        else:
+                            resp = await AioGeneration.call(**call_kwargs)
                         return _normalize_chat_response(resp)
             except Exception as e:
                 if _is_quota_error(e):
@@ -580,61 +617,35 @@ class DashScopeClient:
         return str(file_id)
 
     async def describe_image(self, path: str | Path) -> str:
-        """用多模态模型对图片做 OCR + 内容描述，返回中文文本。"""
-        from dashscope import MultiModalConversation
+        """用 MultiModalConversation 对图片做 OCR + 内容描述（对齐官方示例）。
 
+        本地文件以 data URI（base64）传入，因工作空间 MaaS 无法读取宿主机 file://。
+        """
         _ensure_sdk_configured()
         p = Path(path).resolve()
         if not p.is_file():
             raise FileNotFoundError(str(p))
 
-        def _call() -> str:
-            # file:// 本地路径由 DashScope SDK / 服务端策略解析
-            uri = p.as_uri()
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"image": uri},
-                        {
-                            "text": (
-                                "请完整识别图片中的全部文字（OCR），并简要描述画面内容与版式。"
-                                "输出中文；若无文字请说明并描述图像主题。"
-                            )
-                        },
-                    ],
-                }
-            ]
-            resp = MultiModalConversation.call(
-                model=settings.vision_model,
-                messages=messages,
-                api_key=settings.dashscope_api_key,
-            )
-            status = getattr(resp, "status_code", None)
-            if status is not None and int(status) != 200:
-                raise DashScopeAPIError(
-                    f"describe_image failed: {getattr(resp, 'code', None)} {getattr(resp, 'message', None)}"
-                )
-            output = getattr(resp, "output", None)
-            data = _obj_to_dict(output) or {}
-            choices = data.get("choices") or []
-            if choices:
-                msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
-                content = msg.get("content") if isinstance(msg, dict) else None
-                if isinstance(content, list):
-                    texts = []
-                    for part in content:
-                        if isinstance(part, dict) and part.get("text"):
-                            texts.append(str(part["text"]))
-                        elif isinstance(part, str):
-                            texts.append(part)
-                    return "\n".join(texts).strip()
-                if isinstance(content, str):
-                    return content.strip()
-            text = data.get("text")
-            if text:
-                return str(text).strip()
-            raise DashScopeAPIError("describe_image returned empty content")
+        mime, _ = mimetypes.guess_type(p.name)
+        if not mime or not mime.startswith("image/"):
+            mime = "image/jpeg"
+        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        image_ref = f"data:{mime};base64,{b64}"
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"image": image_ref},
+                    {
+                        "text": (
+                            "请完整识别图片中的全部文字（OCR），并简要描述画面内容与版式。"
+                            "输出中文；若无文字请说明并描述图像主题。"
+                        )
+                    },
+                ],
+            }
+        ]
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(3),
@@ -643,7 +654,47 @@ class DashScopeClient:
             reraise=True,
         ):
             with attempt:
-                return await asyncio.to_thread(_call)
+                resp = await AioMultiModalConversation.call(
+                    api_key=settings.dashscope_api_key,
+                    model=settings.vision_model,
+                    messages=messages,
+                )
+                status = getattr(resp, "status_code", None)
+                if status is not None and int(status) != HTTPStatus.OK:
+                    raise DashScopeAPIError(
+                        f"describe_image failed: {getattr(resp, 'code', None)} "
+                        f"{getattr(resp, 'message', None)}",
+                        status_code=int(status) if status is not None else None,
+                        code=str(getattr(resp, "code", None) or ""),
+                    )
+                # 官方示例：response.output.choices[0].message.content[0]["text"]
+                output = getattr(resp, "output", None)
+                data = _obj_to_dict(output) or {}
+                choices = data.get("choices") or []
+                if choices:
+                    choice0 = choices[0] if isinstance(choices[0], dict) else _obj_to_dict(choices[0])
+                    msg = (choice0 or {}).get("message") or {}
+                    if not isinstance(msg, dict):
+                        msg = _obj_to_dict(msg) or {}
+                    content = msg.get("content")
+                    if isinstance(content, list) and content:
+                        first = content[0]
+                        if isinstance(first, dict) and first.get("text"):
+                            return str(first["text"]).strip()
+                        texts = []
+                        for part in content:
+                            if isinstance(part, dict) and part.get("text"):
+                                texts.append(str(part["text"]))
+                            elif isinstance(part, str):
+                                texts.append(part)
+                        if texts:
+                            return "\n".join(texts).strip()
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
+                text = data.get("text")
+                if text:
+                    return str(text).strip()
+                raise DashScopeAPIError("describe_image returned empty content")
         raise RuntimeError("describe_image unreachable")
 
     async def delete_file(self, file_id: str) -> None:

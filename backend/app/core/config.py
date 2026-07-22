@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     embedding_model: str = Field(default="text-embedding-v4", alias="EMBEDDING_MODEL")
     embedding_dim: int = Field(default=1024, alias="EMBEDDING_DIM")
     rerank_model: str = Field(default="qwen3-rerank", alias="RERANK_MODEL")
-    chat_model: str = Field(default="qwen3.6-plus", alias="CHAT_MODEL")
-    research_model: str = Field(default="qwen3.6-plus", alias="RESEARCH_MODEL")
+    chat_model: str = Field(default="qwen3.5-flash", alias="CHAT_MODEL")
+    research_model: str = Field(default="qwen3.5-plus", alias="RESEARCH_MODEL")
 
     # --- 检索与深度研究：控制召回量与反思轮次 ---
     retrieval_top_k: int = Field(default=20, alias="RETRIEVAL_TOP_K")
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     mineru_backend: str = Field(default="pipeline", alias="MINERU_BACKEND")
     mineru_timeout_seconds: int = Field(default=600, alias="MINERU_TIMEOUT_SECONDS")
     mineru_ocr: bool = Field(default=True, alias="MINERU_OCR")
-    vision_model: str = Field(default="qwen-vl-plus", alias="VISION_MODEL")
+    vision_model: str = Field(default="qwen3.5-flash", alias="VISION_MODEL")
 
     # --- 会话记忆：滑动窗口 + 滚动摘要 ---
     session_history_window: int = Field(default=8, alias="SESSION_HISTORY_WINDOW")
