@@ -23,7 +23,7 @@ pymilvus==2.5.3
 setuptools==80.9.0
 
 # --- LLM SDK ---
-openai==1.109.1
+dashscope==1.26.4
 httpx==0.28.1
 tenacity==9.0.0
 

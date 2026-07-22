@@ -12,14 +12,15 @@ interface Props {
   mode: "chat" | "research";
   onModeChange: (mode: "chat" | "research") => void;
   threadId: string | null;
+  /** true when useChat status is submitted | streaming */
   loading: boolean;
   onSend: (query: string) => void;
-  onCancel: () => void;
+  onStop: () => void;
   onFilesChange?: (files: SessionFileItem[]) => void;
   onEnsureThread?: () => Promise<string | null>;
 }
 
-export function Composer({ mode, onModeChange, threadId, loading, onSend, onCancel, onFilesChange, onEnsureThread }: Props) {
+export function Composer({ mode, onModeChange, threadId, loading, onSend, onStop, onFilesChange, onEnsureThread }: Props) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -90,7 +91,7 @@ export function Composer({ mode, onModeChange, threadId, loading, onSend, onCanc
         </div>
         <div className="flex items-center gap-2">
           {loading ? (
-            <button type="button" onClick={onCancel} className="btn-outline">
+            <button type="button" onClick={onStop} className="btn-outline">
               <Square className="h-4 w-4" />
               终止
             </button>

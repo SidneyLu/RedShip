@@ -144,6 +144,19 @@ def drop_namespace(collection_name: str, namespace: str) -> int:
     return res.get("delete_count", 0) if isinstance(res, dict) else 0
 
 
+def purge_legacy_session_from_kb() -> int:
+    """清理误写入 knowledge_base 的旧会话向量（source==session）。"""
+    client = get_milvus()
+    name = settings.milvus_kb_collection
+    if not client.has_collection(name):
+        return 0
+    res = client.delete(collection_name=name, filter='source == "session"')
+    count = res.get("delete_count", 0) if isinstance(res, dict) else 0
+    if count:
+        logger.info("Purged {} legacy session rows from {}", count, name)
+    return count
+
+
 def upsert_chunks(collection_name: str, chunks: Sequence[IndexableChunk]) -> int:
     if not chunks:
         return 0

@@ -1,22 +1,36 @@
-"""会话附件：上传到 thread，走 Files API 或 session_rag 摄入。"""
+"""会话附件：上传到 thread，走 Files API 或 session_rag 摄入。
+
+与管理员 knowledge/bibliography 完全隔离，仅写入 session_files + session_chunks。
+"""
 from __future__ import annotations
 
+import re
 import shutil
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
 from app.core.config import settings
 from app.db.models import SessionFile, Thread
+from app.knowledge.ingestion.parser import IMAGE_EXTENSIONS, SESSION_UPLOAD_EXTENSIONS
 from app.knowledge.session_docs import ingest_session_file, purge_session_file_vectors
 from app.llm.dashscope import dashscope_client
 
 router = APIRouter(prefix="/api/threads", tags=["session-files"])
+
+_UNSAFE_NAME = re.compile(r"[^\w.\u4e00-\u9fff\-]+", re.UNICODE)
+
+
+def _safe_filename(name: str | None) -> str:
+    raw = (name or "upload.bin").replace("\\", "/").split("/")[-1]
+    raw = raw.strip().lstrip(".")
+    cleaned = _UNSAFE_NAME.sub("_", raw)[:180] or "upload.bin"
+    return cleaned
 
 
 class SessionFileOut(BaseModel):
@@ -69,21 +83,37 @@ async def upload_file(
     if not t:
         raise HTTPException(status_code=404, detail="Thread not found")
 
-    upload_root = Path(settings.upload_dir) / thread_id
+    original = _safe_filename(file.filename)
+    ext = Path(original).suffix.lower()
+    if ext not in SESSION_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {ext}. Allowed: {sorted(SESSION_UPLOAD_EXTENSIONS)}",
+        )
+
+    upload_root = Path(settings.upload_dir) / "session" / thread_id
     upload_root.mkdir(parents=True, exist_ok=True)
-    safe_name = file.filename or "upload.bin"
-    target = upload_root / safe_name
+    stored_name = f"{uuid.uuid4().hex}_{original}"
+    target = upload_root / stored_name
     with target.open("wb") as out:
         shutil.copyfileobj(file.file, out)
+
+    if ext in IMAGE_EXTENSIONS and target.stat().st_size > settings.session_image_max_bytes:
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image exceeds max size {settings.session_image_max_bytes} bytes",
+        )
 
     try:
         row = await ingest_session_file(
             session,
             thread_id=thread_id,
             storage_path=target,
-            original_filename=safe_name,
+            original_filename=original,
         )
     except Exception as e:
+        target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Failed to ingest: {e}") from e
     return _to_out(row)
 

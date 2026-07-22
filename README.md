@@ -9,8 +9,10 @@
 | 快速问答 | Pipeline RAG：知识库混合检索 + 可选联网搜索 | &lt; 5 秒 |
 | 深度研究 | 规划 → 并行联网检索/抽取 → 反思循环 → 报告生成 | 1–10 分钟 |
 
-- **知识库**：`bibliography/` 目录增量摄入（SHA-256），Milvus 混合检索（Dense + BM25/jieba）→ qwen3-rerank 精排
-- **文档智能**：小文档走 DashScope Files API；大文档走 MinerU 解析后会话级 Milvus RAG（无跨路径回退）
+- **知识库**：`bibliography/` 目录增量摄入（SHA-256），Milvus `knowledge_base` 混合检索 → qwen3-rerank 精排
+- **会话附件**：用户上传仅进 `session_files` + `session_chunks`，与管理员文献隔离；小文件 Files API，大文件/图片走会话 RAG（MinerU OCR / VL）
+- **记忆**：会话滚动摘要 + 滑动窗口；用户长期记忆跨会话召回（`/api/me/memories`）
+- **文档智能**：小文档走 DashScope Files API；大文档/扫描 PDF/图片走解析后会话级 Milvus RAG
 - **引用**：答案段落内嵌 `[(N)](/threads/.../citations/...)`，悬停预览
 
 ## 快速开始
@@ -19,8 +21,10 @@
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入 DASHSCOPE_API_KEY
+# 编辑 .env：填入 DASHSCOPE_API_KEY，并设置强随机 JWT_SECRET / 管理员密码
 ```
+
+`.env` **不要提交到 Git**。本地凭据快照可放在已忽略的 `.local/secrets-backup/`（仓库内已提供该约定）。后端默认拒绝占位密钥；仅本地排障时可设 `ALLOW_INSECURE_DEFAULTS=true`。
 
 ### 2. 启动服务（7 个容器）
 
@@ -43,7 +47,7 @@ docker compose up -d --build
 
 - 前端：http://localhost:8006
 - API 文档：http://localhost:8005/docs
-- 默认管理员：`admin@redship.local` / `ChangeMe!2026`（见 `.env`）
+- 管理员账号：见本地 `.env` 中的 `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD`（勿使用示例弱口令）
 
 ### 4. 导入文献
 
@@ -245,7 +249,9 @@ docker compose up -d
 - **向量库**：Milvus 2.5（Hybrid + RRFRanker）
 - **关系库**：PostgreSQL 17 + Alembic
 - **缓存**：Redis（LangGraph checkpoint、embedding 缓存、联网搜索缓存）
-- **AI**：DashScope — Chat Completions、Responses API、Files API、Embedding、Rerank
+- **AI**：官方 `dashscope` SDK（Generation / Embedding / TextReRank / 多模态）；Responses 与 Files(file-extract) 仍走 compatible-mode HTTP
+- **记忆**：会话摘要存 `Thread.extra_metadata`；用户记忆表 `user_memories` + Milvus `user_memory`
+- **语料隔离**：管理员 `knowledge_base` vs 会话 `session_chunks` vs 用户记忆 `user_memory`
 
 ## 详细设计
 

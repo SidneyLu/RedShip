@@ -54,9 +54,14 @@ async def query_analyzer(state: RagState) -> dict[str, Any]:
     """
     query = state["query"]
     history = state.get("history") or []
-    messages = [{"role": "system", "content": QUERY_ANALYZER_SYSTEM}]
-    if history:
-        for h in history[-4:]:
+    system_messages = state.get("system_messages") or []
+    messages: list[dict[str, Any]] = [{"role": "system", "content": QUERY_ANALYZER_SYSTEM}]
+    # 受保护 system（摘要 / fileid / 长期记忆）单独前置，不进窗口截断
+    for sm in system_messages:
+        if isinstance(sm, dict) and sm.get("content"):
+            messages.append({"role": "system", "content": sm["content"]})
+    for h in history:
+        if h.get("role") in {"user", "assistant"} and h.get("content"):
             messages.append({"role": h["role"], "content": h["content"]})
     messages.append({"role": "user", "content": query})
 
@@ -191,7 +196,9 @@ def evidence_merger(state: RagState) -> dict[str, Any]:
 
     for raw in state.get("kb_passages") or []:
         p = RetrievedPassage(**raw)
-        citations.append({**p.to_citation(ordinal), "source_type": "kb"})
+        # 保留 retriever 给出的 source（session vs bibliography），便于前端区分
+        src = p.source if p.source in {"session", "bibliography", "upload"} else "kb"
+        citations.append({**p.to_citation(ordinal), "source_type": src if src != "upload" else "kb"})
         ordinal += 1
 
     for hit in state.get("web_results") or []:
@@ -259,7 +266,16 @@ async def generator_stream(
 
     messages = [
         {"role": "system", "content": system_prompt},
-        *(state.get("history") or [])[-4:],
+        *[
+            {"role": "system", "content": sm["content"]}
+            for sm in (state.get("system_messages") or [])
+            if isinstance(sm, dict) and sm.get("content")
+        ],
+        *[
+            {"role": h["role"], "content": h["content"]}
+            for h in (state.get("history") or [])
+            if h.get("role") in {"user", "assistant"} and h.get("content")
+        ],
         {"role": "user", "content": user_payload},
     ]
 

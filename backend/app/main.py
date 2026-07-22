@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from sqlalchemy import select
 
-from app.api.routes import admin, auth, chat, citations, knowledge, session_files, threads
+from app.api.routes import admin, auth, chat, citations, knowledge, memories, session_files, threads
 from app.core.config import settings
 from app.core.redis import close_redis, get_redis
 from app.core.security import hash_password
@@ -26,16 +26,26 @@ from app.llm.dashscope import get_dashscope_client
 
 
 async def _bootstrap_admin() -> None:
-    """首次启动时创建 .env 中配置的管理员账号（已存在则仅确保 is_admin）。"""
+    """首次启动时创建 .env 中配置的管理员；可选同步密码哈希以便本地轮换后立即生效。"""
     factory = get_session_factory()
     async with factory() as session:
         existing = (
             await session.execute(select(User).where(User.email == settings.admin_bootstrap_email))
         ).scalar_one_or_none()
         if existing:
+            changed = False
             if not existing.is_admin:
                 existing.is_admin = True
+                changed = True
+            if settings.admin_bootstrap_sync_password:
+                existing.password_hash = hash_password(settings.admin_bootstrap_password)
+                changed = True
+            if changed:
                 await session.commit()
+                logger.info(
+                    "Updated bootstrap admin {} (admin_flag/password sync)",
+                    settings.admin_bootstrap_email,
+                )
             return
         user = User(
             email=settings.admin_bootstrap_email,
@@ -73,7 +83,23 @@ async def lifespan(app: FastAPI):
     logger.info("RedShip backend starting up...")
 
     try:
+        settings.validate_security_or_raise()
+    except RuntimeError as e:
+        logger.error("{}", e)
+        raise
+    if settings.allow_insecure_defaults and settings.insecure_default_problems():
+        logger.warning(
+            "ALLOW_INSECURE_DEFAULTS=true：仍在使用不安全默认凭据（{}）",
+            "; ".join(settings.insecure_default_problems()),
+        )
+
+    try:
         ensure_collection(settings.milvus_kb_collection)
+        ensure_collection(settings.milvus_session_collection)
+        ensure_collection(settings.milvus_user_memory_collection)
+        from app.knowledge.indexer import purge_legacy_session_from_kb
+
+        purge_legacy_session_from_kb()
     except Exception as e:
         logger.warning("Milvus collection ensure failed (will retry lazily): {}", e)
 
@@ -124,6 +150,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(knowledge.router)
     app.include_router(session_files.router)
+    app.include_router(memories.router)
     app.include_router(citations.router)
     app.include_router(admin.router)
 

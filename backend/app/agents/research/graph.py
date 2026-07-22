@@ -1,6 +1,6 @@
 """Deep Research LangGraph（PLAN.md「深度研究」）。
 
-图：planner → search → reflect →（条件回 search）→ citations → END；
+图：local_retrieve → planner → search → reflect →（条件回 search）→ citations → END；
 research_step 等进度经 events_queue 注入 run_research_stream；报告由 writer_stream 流式输出。
 """
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator
 
 from langgraph.graph import END, START, StateGraph
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.research.nodes import (
     build_citations,
@@ -23,6 +24,30 @@ from app.agents.research.nodes import (
 from app.agents.research.state import ResearchState
 from app.core.checkpoint import get_checkpointer
 from app.core.config import settings
+from app.knowledge.retriever import retrieve
+
+
+async def _local_retrieve_node(state: ResearchState, config: dict[str, Any]) -> dict[str, Any]:
+    """先检索会话附件 collection + 知识库，供 planner/writer 使用（二者物理隔离）。"""
+    session: AsyncSession | None = config["configurable"].get("session")
+    thread_id = state.get("thread_id")
+    query = state.get("query") or ""
+    if session is None or not query.strip():
+        return {"session_passages": [], "kb_passages": []}
+
+    passages = await retrieve(session, query, thread_id=thread_id)
+    session_passages = [p.__dict__ for p in passages if p.source == "session"]
+    kb_passages = [p.__dict__ for p in passages if p.source != "session"]
+    queue: asyncio.Queue[dict[str, Any]] = config["configurable"]["events_queue"]
+    await queue.put(
+        {
+            "type": "research_step",
+            "step": "local_retrieve",
+            "session_hits": len(session_passages),
+            "kb_hits": len(kb_passages),
+        }
+    )
+    return {"session_passages": session_passages, "kb_passages": kb_passages}
 
 
 async def _planner_node(state: ResearchState, config: dict[str, Any]) -> dict[str, Any]:
@@ -110,7 +135,11 @@ async def _reflect_node(state: ResearchState, config: dict[str, Any]) -> dict[st
 
 
 async def _citations_node(state: ResearchState, config: dict[str, Any]) -> dict[str, Any]:
-    citations = build_citations(state.get("evidence") or [])
+    citations = build_citations(
+        state.get("evidence") or [],
+        session_passages=state.get("session_passages") or [],
+        kb_passages=state.get("kb_passages") or [],
+    )
     queue: asyncio.Queue[dict[str, Any]] = config["configurable"]["events_queue"]
     await queue.put({"type": "citations_ready", "items": citations})
     return {"citations": citations}
@@ -131,27 +160,33 @@ def _route_after_reflect(state: ResearchState) -> str:
 @lru_cache(maxsize=1)
 def get_research_graph():
     graph = StateGraph(ResearchState)
+    graph.add_node("local_retrieve", _local_retrieve_node)
     graph.add_node("planner", _planner_node)
     graph.add_node("search", _search_node)
     graph.add_node("reflect", _reflect_node)
     graph.add_node("citation_builder", _citations_node)
 
-    graph.add_edge(START, "planner")
+    graph.add_edge(START, "local_retrieve")
+    graph.add_edge("local_retrieve", "planner")
     graph.add_edge("planner", "search")
     graph.add_edge("search", "reflect")
-    graph.add_conditional_edges("reflect", _route_after_reflect, {"search": "search", "citations": "citation_builder"})
+    graph.add_conditional_edges(
+        "reflect", _route_after_reflect, {"search": "search", "citations": "citation_builder"}
+    )
     graph.add_edge("citation_builder", END)
 
     return graph.compile(checkpointer=get_checkpointer())
 
 
 async def run_research_stream(
+    session: AsyncSession,
     *,
     user_id: str,
     thread_id: str,
     message_id: str | None,
     query: str,
     history: list[dict[str, Any]] | None = None,
+    system_messages: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     if not message_id:
         message_id = str(uuid.uuid4())
@@ -161,9 +196,12 @@ async def run_research_stream(
         "thread_id": thread_id,
         "query": query,
         "history": history or [],
+        "system_messages": system_messages or [],
         "evidence": [],
         "iteration": 0,
         "max_iterations": settings.research_max_iterations,
+        "session_passages": [],
+        "kb_passages": [],
     }
 
     events_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -172,6 +210,7 @@ async def run_research_stream(
         "configurable": {
             "thread_id": thread_id,
             "events_queue": events_queue,
+            "session": session,
         }
     }
 

@@ -3,9 +3,11 @@
 /** 会话附件列表与上传状态展示。 */
 
 import { useEffect, useState, useRef } from "react";
-import { Paperclip, FileText, X, Loader2 } from "lucide-react";
+import { Paperclip, FileText, Image as ImageIcon, X, Loader2 } from "lucide-react";
 import { api, getApiBase, getToken, type SessionFileItem } from "@/lib/api";
 import { useToast } from "@/components/providers/ToastProvider";
+
+const IMAGE_EXT = /\.(png|jpe?g|webp)$/i;
 
 interface Props {
   threadId: string | null;
@@ -86,7 +88,7 @@ export function FileAttachment({ threadId, onChange, onEnsureThread }: Props) {
         ref={fileRef}
         type="file"
         className="hidden"
-        accept=".md,.markdown,.txt,.pdf,.docx"
+        accept=".md,.markdown,.txt,.pdf,.docx,.png,.jpg,.jpeg,.webp"
         onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
       />
       <button
@@ -94,19 +96,23 @@ export function FileAttachment({ threadId, onChange, onEnsureThread }: Props) {
         onClick={() => fileRef.current?.click()}
         disabled={uploading}
         className="btn-ghost"
-        title="上传会话文件（PDF / MD / DOCX）"
+        title="上传会话附件（PDF / Word / 图片 / 文本，仅本会话可见）"
       >
         {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
         添加文件
       </button>
       {files.map((f) => (
         <div key={f.id} className="chip group relative max-w-[18rem]">
-          <FileText className="h-3.5 w-3.5" />
+          {IMAGE_EXT.test(f.filename) ? (
+            <ImageIcon className="h-3.5 w-3.5" />
+          ) : (
+            <FileText className="h-3.5 w-3.5" />
+          )}
           <span className="truncate" title={f.filename}>
             {f.filename}
           </span>
           <span className="ml-1 text-[10px] uppercase tracking-wider text-crimson-700/80">
-            {f.mode === "files_api" ? "Files API" : "RAG"}
+            {f.mode === "files_api" ? "Files API" : "会话RAG"}
           </span>
           <button
             type="button"

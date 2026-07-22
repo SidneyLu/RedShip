@@ -1,6 +1,12 @@
 """DashScope 统一客户端：embed / rerank / chat / responses / files。
 
-对应 PLAN.md「dashscope-client」。全项目无本地大模型，均经 OpenAI 兼容端点调用；
+基于官方 `dashscope` Python SDK（AioGeneration / TextEmbedding / AioTextReRank）。
+启动时设置 `dashscope.base_http_api_url` 与 api_key（工作空间专用域或公网域）。
+
+例外（SDK 尚无对等封装，仍走 HTTP）：
+- Responses API（深度研究 web_search / web_extractor）→ compatible-mode `/responses`
+- Files file-extract（会话小文档 fileid://）→ compatible-mode `/files`
+
 embedding 结果可缓存至 Redis（键 `emb:v4:{dim}:{sha256}`）。
 """
 from __future__ import annotations
@@ -8,14 +14,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import time
 from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterable
+from typing import Any, AsyncIterator
 
+import dashscope
 import httpx
+from dashscope import AioGeneration, AioTextReRank, TextEmbedding
 from loguru import logger
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, PermissionDeniedError
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
@@ -27,16 +34,23 @@ from app.core.config import settings
 from app.core.redis import cache_get_json, cache_set_json
 
 
-# text-embedding-v4 单次请求最多 10 条文本
 EMBEDDING_BATCH_SIZE = 10
 EMBED_CACHE_TTL = 60 * 60  # 1 小时
-_RETRYABLE_LLM_ERRORS = (
-    httpx.HTTPError,
-    asyncio.TimeoutError,
-    APIConnectionError,
-    APITimeoutError,
-)
+_RETRYABLE_LLM_ERRORS = (httpx.HTTPError, asyncio.TimeoutError, TimeoutError, ConnectionError)
 _FALLBACK_CHAT_MODELS = ("qwen-turbo",)
+_DEFAULT_RERANK_INSTRUCT = (
+    "Given a Chinese Communist Party history research query, "
+    "retrieve the most relevant passages that answer the query."
+)
+
+
+class DashScopeAPIError(RuntimeError):
+    """官方 SDK / HTTP 调用失败。"""
+
+    def __init__(self, message: str, *, status_code: int | None = None, code: str | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
 
 
 def _model_candidates(primary: str | None) -> list[str]:
@@ -48,35 +62,124 @@ def _model_candidates(primary: str | None) -> list[str]:
     return candidates
 
 
-def _is_quota_permission_error(exc: PermissionDeniedError) -> bool:
+def _is_quota_error(exc: BaseException) -> bool:
     text = str(exc).lower()
     return "quota" in text or "free tier" in text or "freetieronly" in text
+
+
+def _ensure_sdk_configured() -> None:
+    """配置官方 SDK 的 api_key 与 base_http_api_url（等同 dashscope.base_http_api_url = ...）。"""
+    dashscope.api_key = settings.dashscope_api_key
+    dashscope.base_http_api_url = settings.dashscope_http_api_url.rstrip("/")
+
+
+def _obj_to_dict(obj: Any) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {k: _obj_to_dict(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_obj_to_dict(v) for v in obj]
+    if hasattr(obj, "items"):
+        try:
+            return {k: _obj_to_dict(v) for k, v in obj.items()}  # type: ignore[arg-type]
+        except Exception:
+            pass
+    if hasattr(obj, "__dict__"):
+        raw = {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+        if raw:
+            return {k: _obj_to_dict(v) for k, v in raw.items()}
+    return obj
+
+
+def _raise_if_failed(resp: Any, *, what: str) -> None:
+    status = getattr(resp, "status_code", None)
+    if status is None and isinstance(resp, dict):
+        status = resp.get("status_code")
+    if status is None or int(status) == int(HTTPStatus.OK):
+        return
+    code = getattr(resp, "code", None) or (resp.get("code") if isinstance(resp, dict) else None)
+    message = getattr(resp, "message", None) or (resp.get("message") if isinstance(resp, dict) else None)
+    raise DashScopeAPIError(
+        f"{what} failed: status={status} code={code} message={message}",
+        status_code=int(status) if status is not None else None,
+        code=str(code) if code else None,
+    )
+
+
+def _message_fields(output: Any) -> tuple[str, str | None, dict[str, Any] | None, str | None]:
+    """从 Generation output 提取 content / reasoning / search_info / finish_reason。"""
+    data = _obj_to_dict(output) or {}
+    if not isinstance(data, dict):
+        return "", None, None, None
+
+    search_info = data.get("search_info")
+    if search_info is not None and not isinstance(search_info, dict):
+        search_info = _obj_to_dict(search_info)
+
+    choices = data.get("choices") or []
+    if not choices:
+        text = data.get("text") or ""
+        return str(text), None, search_info if isinstance(search_info, dict) else None, data.get(
+            "finish_reason"
+        )
+
+    choice = choices[0] if isinstance(choices[0], dict) else _obj_to_dict(choices[0])
+    if not isinstance(choice, dict):
+        return "", None, search_info if isinstance(search_info, dict) else None, None
+    finish = choice.get("finish_reason")
+    message = choice.get("message") or {}
+    if not isinstance(message, dict):
+        message = _obj_to_dict(message) or {}
+    content = message.get("content") or ""
+    if isinstance(content, list):
+        content = "".join(
+            str(part.get("text") if isinstance(part, dict) else part) for part in content
+        )
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
+    return (
+        str(content),
+        str(reasoning) if reasoning else None,
+        search_info if isinstance(search_info, dict) else None,
+        str(finish) if finish else None,
+    )
+
+
+def _normalize_chat_response(resp: Any) -> dict[str, Any]:
+    """保持下游兼容的 OpenAI-like choices 结构。"""
+    _raise_if_failed(resp, what="chat")
+    content, reasoning, search_info, finish = _message_fields(getattr(resp, "output", None))
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    out: dict[str, Any] = {
+        "id": getattr(resp, "request_id", None),
+        "choices": [{"index": 0, "message": message, "finish_reason": finish or "stop"}],
+    }
+    usage = _obj_to_dict(getattr(resp, "usage", None))
+    if usage:
+        out["usage"] = usage
+    if search_info:
+        out["search_info"] = search_info
+    return out
 
 
 @dataclass
 class RerankResult:
     """rerank API 单条结果：index 指向入参 documents 下标。"""
+
     index: int
     score: float
     text: str | None = None
 
 
 class DashScopeClient:
-    """DashScope OpenAI 兼容 API 的异步薄封装；懒加载 chat 客户端与 httpx。"""
+    """官方 dashscope SDK 异步封装；对外方法签名保持不变。"""
 
     def __init__(self) -> None:
-        self._chat_client: AsyncOpenAI | None = None
         self._http: httpx.AsyncClient | None = None
-
-    # --- 懒加载 HTTP 资源 ---
-    def _ensure_chat_client(self) -> AsyncOpenAI:
-        if self._chat_client is None:
-            self._chat_client = AsyncOpenAI(
-                api_key=settings.dashscope_api_key,
-                base_url=settings.dashscope_base_url,
-                timeout=httpx.Timeout(120.0, connect=30.0),
-            )
-        return self._chat_client
 
     def _ensure_http(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -90,9 +193,6 @@ class DashScopeClient:
         if self._http is not None:
             await self._http.aclose()
             self._http = None
-        if self._chat_client is not None:
-            await self._chat_client.close()
-            self._chat_client = None
 
     # --- Embedding（text-embedding-v4）---
     async def embed(
@@ -102,16 +202,7 @@ class DashScopeClient:
         dimensions: int | None = None,
         use_cache: bool = True,
     ) -> list[list[float]]:
-        """计算稠密向量；顺序与输入 texts 一致。
-
-        参数:
-            texts: 单条字符串或列表。
-            dimensions: 向量维度，默认 settings.embedding_dim。
-            use_cache: 是否读/写 Redis 缓存。
-
-        返回:
-            每条文本对应一个 float 列表；空输入返回 []。
-        """
+        """计算稠密向量；顺序与输入 texts 一致。"""
         if isinstance(texts, str):
             single = True
             input_texts: list[str] = [texts]
@@ -123,12 +214,9 @@ class DashScopeClient:
             return []
 
         dim = dimensions or settings.embedding_dim
-        client = self._ensure_chat_client()
-
         results: list[list[float] | None] = [None] * len(input_texts)
         cache_keys: list[str | None] = [None] * len(input_texts)
 
-        # 先查 Redis，未命中再批量请求 API
         if use_cache:
             for i, text in enumerate(input_texts):
                 key = f"emb:v4:{dim}:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
@@ -137,27 +225,43 @@ class DashScopeClient:
                 if hit is not None and isinstance(hit, list):
                     results[i] = hit
 
-        # Build pending batches
         pending = [i for i, r in enumerate(results) if r is None]
+
+        def _embed_batch(batch_texts: list[str]) -> list[list[float]]:
+            _ensure_sdk_configured()
+            resp = TextEmbedding.call(
+                model=settings.embedding_model,
+                input=batch_texts,
+                dimension=dim,
+                api_key=settings.dashscope_api_key,
+            )
+            _raise_if_failed(resp, what="embed")
+            output = _obj_to_dict(getattr(resp, "output", None)) or {}
+            embeddings = output.get("embeddings") or []
+            by_index: dict[int, list[float]] = {}
+            for item in embeddings:
+                data = item if isinstance(item, dict) else _obj_to_dict(item)
+                if not isinstance(data, dict):
+                    continue
+                idx = int(data.get("text_index", len(by_index)))
+                emb = data.get("embedding") or []
+                by_index[idx] = list(emb)
+            return [by_index.get(i, [0.0] * dim) for i in range(len(batch_texts))]
+
         for start in range(0, len(pending), EMBEDDING_BATCH_SIZE):
             batch_idx = pending[start : start + EMBEDDING_BATCH_SIZE]
             batch_texts = [input_texts[i] for i in batch_idx]
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(4),
                 wait=wait_exponential(multiplier=1, min=2, max=15),
-                retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
+                retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS + (DashScopeAPIError,)),
                 reraise=True,
             ):
                 with attempt:
-                    resp = await client.embeddings.create(
-                        model=settings.embedding_model,
-                        input=batch_texts,
-                        dimensions=dim,
-                        encoding_format="float",
-                    )
-            for j, item in enumerate(resp.data):
+                    vectors = await asyncio.to_thread(_embed_batch, batch_texts)
+            for j, vec in enumerate(vectors):
                 idx = batch_idx[j]
-                results[idx] = list(item.embedding)
+                results[idx] = vec
                 if use_cache and cache_keys[idx]:
                     try:
                         await cache_set_json(cache_keys[idx], results[idx], EMBED_CACHE_TTL)
@@ -176,54 +280,42 @@ class DashScopeClient:
         top_n: int | None = None,
         instruct: str | None = None,
     ) -> list[RerankResult]:
-        """对 documents 按与 query 的相关性重排。
-
-        参数:
-            query: 用户检索问句。
-            documents: 待打分段落列表。
-            top_n: 返回条数上限。
-            instruct: 党史领域默认英文 instruct，可覆盖。
-
-        返回:
-            按相关分降序的 RerankResult，index 为 documents 下标。
-        """
+        """对 documents 按与 query 的相关性重排。"""
         if not documents:
             return []
 
-        url = "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
-        body: dict[str, Any] = {
+        _ensure_sdk_configured()
+        kwargs: dict[str, Any] = {
             "model": settings.rerank_model,
             "query": query,
             "documents": documents,
+            "return_documents": True,
+            "api_key": settings.dashscope_api_key,
+            "instruct": instruct or _DEFAULT_RERANK_INSTRUCT,
         }
         if top_n is not None:
-            body["top_n"] = min(top_n, len(documents))
-        if instruct:
-            body["instruct"] = instruct
-        else:
-            body["instruct"] = (
-                "Given a Chinese Communist Party history research query, "
-                "retrieve the most relevant passages that answer the query."
-            )
+            kwargs["top_n"] = min(top_n, len(documents))
 
-        http = self._ensure_http()
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(4),
             wait=wait_exponential(multiplier=1, min=2, max=15),
-            retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
+            retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS + (DashScopeAPIError,)),
             reraise=True,
         ):
             with attempt:
-                resp = await http.post(url, json=body)
-                resp.raise_for_status()
-                data = resp.json()
+                resp = await AioTextReRank.call(**kwargs)
+                _raise_if_failed(resp, what="rerank")
 
-        results = data.get("results") or data.get("output", {}).get("results", [])
+        output = _obj_to_dict(getattr(resp, "output", None)) or {}
+        results = output.get("results") or []
         out: list[RerankResult] = []
         for item in results:
-            idx = int(item.get("index", -1))
-            score = float(item.get("relevance_score", item.get("score", 0.0)))
-            doc = item.get("document")
+            data = item if isinstance(item, dict) else _obj_to_dict(item)
+            if not isinstance(data, dict):
+                continue
+            idx = int(data.get("index", -1))
+            score = float(data.get("relevance_score", data.get("score", 0.0)))
+            doc = data.get("document")
             text = None
             if isinstance(doc, dict):
                 text = doc.get("text")
@@ -232,7 +324,7 @@ class DashScopeClient:
             out.append(RerankResult(index=idx, score=score, text=text))
         return out
 
-    # --- Chat Completions（快速问答、query_analyzer 等）---
+    # --- Chat（Generation）---
     async def chat_stream(
         self,
         messages: list[dict[str, Any]],
@@ -244,37 +336,38 @@ class DashScopeClient:
         forced_search: bool = False,
         extra_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """流式 Chat Completions。
-
-        产出事件类型:
-            delta / reasoning / search_info / done（见 rag nodes generator_stream）。
-        """
-        client = self._ensure_chat_client()
-        body: dict[str, Any] = {}
-        if extra_body:
-            body.update(extra_body)
+        """流式 Generation；产出 delta / reasoning / search_info / done。"""
+        _ensure_sdk_configured()
+        kwargs: dict[str, Any] = {
+            "messages": messages,
+            "result_format": "message",
+            "stream": True,
+            "incremental_output": True,
+            "api_key": settings.dashscope_api_key,
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if enable_search:
-            body["enable_search"] = True
-            body["search_options"] = {
+            kwargs["enable_search"] = True
+            kwargs["search_options"] = {
                 "search_strategy": search_strategy,
                 "forced_search": forced_search,
                 "enable_source": True,
             }
-            body.setdefault("enable_source", True)
+        if extra_body:
+            # 兼容旧调用方把 enable_source 等放在 extra_body
+            search_opts = kwargs.get("search_options")
+            if isinstance(search_opts, dict) and "enable_source" in extra_body:
+                search_opts["enable_source"] = extra_body["enable_source"]
+            for k, v in extra_body.items():
+                if k in {"enable_source", "search_options"}:
+                    continue
+                kwargs.setdefault(k, v)
 
-        kwargs: dict[str, Any] = {
-            "model": model or settings.chat_model,
-            "messages": messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            "extra_body": body or None,
-        }
-        if temperature is not None:
-            kwargs["temperature"] = temperature
-
-        last_quota_error: PermissionDeniedError | None = None
+        last_quota_error: BaseException | None = None
+        stream = None
         for candidate in _model_candidates(model or settings.chat_model):
-            kwargs["model"] = candidate
+            call_kwargs = {**kwargs, "model": candidate}
             try:
                 async for attempt in AsyncRetrying(
                     stop=stop_after_attempt(4),
@@ -283,17 +376,13 @@ class DashScopeClient:
                     reraise=True,
                 ):
                     with attempt:
-                        stream = await client.chat.completions.create(
-                            **{k: v for k, v in kwargs.items() if v is not None}
-                        )
+                        stream = await AioGeneration.call(**call_kwargs)
                 break
-            except PermissionDeniedError as e:
-                if _is_quota_permission_error(e):
+            except Exception as e:
+                if _is_quota_error(e):
                     last_quota_error = e
                     logger.warning("chat_stream model {} quota unavailable; trying fallback", candidate)
                     continue
-                raise
-            except Exception as e:
                 logger.exception("chat_stream call failed: {}", e)
                 raise
         else:
@@ -302,29 +391,34 @@ class DashScopeClient:
             raise RuntimeError("chat_stream could not open a model stream")
 
         usage: dict[str, Any] | None = None
-        async for chunk in stream:
-            # Search info often comes as a top-level extra field
-            raw = chunk.model_dump() if hasattr(chunk, "model_dump") else {}
-            search_info = raw.get("search_info")
-            if search_info:
-                yield {"type": "search_info", "data": search_info}
+        emitted_search = False
+        emitted_done = False
+        async for resp in stream:  # type: ignore[union-attr]
+            try:
+                _raise_if_failed(resp, what="chat_stream")
+            except DashScopeAPIError as e:
+                if _is_quota_error(e):
+                    raise
+                yield {"type": "error", "message": str(e)}
+                return
 
-            choices = raw.get("choices") or []
-            if not choices:
-                if raw.get("usage"):
-                    usage = raw["usage"]
-                continue
-            choice = choices[0]
-            delta = choice.get("delta") or {}
-            reasoning = delta.get("reasoning_content")
+            content, reasoning, search_info, finish = _message_fields(getattr(resp, "output", None))
+            usage_raw = _obj_to_dict(getattr(resp, "usage", None))
+            if isinstance(usage_raw, dict) and usage_raw:
+                usage = usage_raw
+
+            if search_info and not emitted_search:
+                emitted_search = True
+                yield {"type": "search_info", "data": search_info}
             if reasoning:
                 yield {"type": "reasoning", "content": reasoning}
-            content = delta.get("content")
             if content:
                 yield {"type": "delta", "content": content}
-            finish = choice.get("finish_reason")
-            if finish:
-                yield {"type": "done", "finish_reason": finish, "usage": raw.get("usage") or usage}
+            if finish and finish not in {"null", "None"}:
+                emitted_done = True
+                yield {"type": "done", "finish_reason": finish, "usage": usage}
+        if not emitted_done:
+            yield {"type": "done", "finish_reason": "stop", "usage": usage}
 
     async def chat(
         self,
@@ -335,34 +429,35 @@ class DashScopeClient:
         extra_body: dict[str, Any] | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """非流式 Chat；用于 query_analyzer 等需 JSON 的场景。"""
-        client = self._ensure_chat_client()
+        """非流式 Generation；返回 OpenAI-like dict 供 query_analyzer / planner 使用。"""
+        _ensure_sdk_configured()
         kwargs: dict[str, Any] = {
-            "model": model or settings.chat_model,
             "messages": messages,
-            "extra_body": extra_body or None,
+            "result_format": "message",
+            "api_key": settings.dashscope_api_key,
         }
         if temperature is not None:
             kwargs["temperature"] = temperature
         if response_format is not None:
             kwargs["response_format"] = response_format
-        last_quota_error: PermissionDeniedError | None = None
+        if extra_body:
+            kwargs.update(extra_body)
+
+        last_quota_error: BaseException | None = None
         for candidate in _model_candidates(model or settings.chat_model):
-            kwargs["model"] = candidate
+            call_kwargs = {**kwargs, "model": candidate}
             try:
                 async for attempt in AsyncRetrying(
                     stop=stop_after_attempt(4),
                     wait=wait_exponential(multiplier=1, min=2, max=15),
-                    retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS),
+                    retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS + (DashScopeAPIError,)),
                     reraise=True,
                 ):
                     with attempt:
-                        resp = await client.chat.completions.create(
-                            **{k: v for k, v in kwargs.items() if v is not None}
-                        )
-                        return resp.model_dump()
-            except PermissionDeniedError as e:
-                if _is_quota_permission_error(e):
+                        resp = await AioGeneration.call(**call_kwargs)
+                        return _normalize_chat_response(resp)
+            except Exception as e:
+                if _is_quota_error(e):
                     last_quota_error = e
                     logger.warning("chat model {} quota unavailable; trying fallback", candidate)
                     continue
@@ -371,7 +466,7 @@ class DashScopeClient:
             raise last_quota_error
         raise RuntimeError("unreachable chat retry state")
 
-    # --- Responses API（深度研究：web_search + web_extractor）---
+    # --- Responses API（深度研究：web_search + web_extractor；SDK 无封装）---
     async def responses_stream(
         self,
         input_text: str | list[dict[str, Any]],
@@ -381,12 +476,8 @@ class DashScopeClient:
         enable_thinking: bool = True,
         extra_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """流式 Responses API；解析 SSE 为结构化 dict 供 research nodes 消费。
-
-        常见 type：response.output_text.delta、web_search_call.completed、
-        web_extractor_call.completed、response.completed。
-        """
-        url = f"{settings.dashscope_responses_base_url.rstrip('/')}/responses"
+        """流式 Responses API；解析 SSE 为结构化 dict 供 research nodes 消费。"""
+        url = f"{settings.resolved_dashscope_responses_base_url}/responses"
         body: dict[str, Any] = {
             "model": model or settings.research_model,
             "input": input_text,
@@ -455,20 +546,116 @@ class DashScopeClient:
         finally:
             await resp.aclose()
 
-    # --- Files API（小会话文档 fileid:// 注入）---
+    # --- Files API（file-extract / fileid://；compatible-mode HTTP）---
     async def upload_file(self, path: str | Path, purpose: str = "file-extract") -> str:
-        """上传文件至 DashScope，返回 file id 供 system message 引用。"""
-        client = self._ensure_chat_client()
+        """上传文件至 DashScope compatible-mode Files，返回 file id。"""
         p = Path(path)
-        # OpenAI SDK files.create accepts a file path-like object
-        with p.open("rb") as fh:
-            resp = await client.files.create(file=fh, purpose=purpose)
-        return resp.id
+        url = f"{settings.resolved_dashscope_files_base_url}/files"
+        http = self._ensure_http()
+
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(4),
+            wait=wait_exponential(multiplier=1, min=2, max=15),
+            retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS),
+            reraise=True,
+        ):
+            with attempt:
+                with p.open("rb") as fh:
+                    files = {"file": (p.name, fh)}
+                    data = {"purpose": purpose}
+                    resp = await http.post(
+                        url,
+                        data=data,
+                        files=files,
+                        headers={"Authorization": f"Bearer {settings.dashscope_api_key}"},
+                    )
+                resp.raise_for_status()
+                payload = resp.json()
+
+        file_id = payload.get("id") or (payload.get("output") or {}).get("id")
+        if not file_id and isinstance(payload.get("data"), dict):
+            file_id = payload["data"].get("id")
+        if not file_id:
+            raise DashScopeAPIError(f"upload_file missing id in response: {payload}")
+        return str(file_id)
+
+    async def describe_image(self, path: str | Path) -> str:
+        """用多模态模型对图片做 OCR + 内容描述，返回中文文本。"""
+        from dashscope import MultiModalConversation
+
+        _ensure_sdk_configured()
+        p = Path(path).resolve()
+        if not p.is_file():
+            raise FileNotFoundError(str(p))
+
+        def _call() -> str:
+            # file:// 本地路径由 DashScope SDK / 服务端策略解析
+            uri = p.as_uri()
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"image": uri},
+                        {
+                            "text": (
+                                "请完整识别图片中的全部文字（OCR），并简要描述画面内容与版式。"
+                                "输出中文；若无文字请说明并描述图像主题。"
+                            )
+                        },
+                    ],
+                }
+            ]
+            resp = MultiModalConversation.call(
+                model=settings.vision_model,
+                messages=messages,
+                api_key=settings.dashscope_api_key,
+            )
+            status = getattr(resp, "status_code", None)
+            if status is not None and int(status) != 200:
+                raise DashScopeAPIError(
+                    f"describe_image failed: {getattr(resp, 'code', None)} {getattr(resp, 'message', None)}"
+                )
+            output = getattr(resp, "output", None)
+            data = _obj_to_dict(output) or {}
+            choices = data.get("choices") or []
+            if choices:
+                msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if isinstance(content, list):
+                    texts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get("text"):
+                            texts.append(str(part["text"]))
+                        elif isinstance(part, str):
+                            texts.append(part)
+                    return "\n".join(texts).strip()
+                if isinstance(content, str):
+                    return content.strip()
+            text = data.get("text")
+            if text:
+                return str(text).strip()
+            raise DashScopeAPIError("describe_image returned empty content")
+
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=2, max=10),
+            retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS + (DashScopeAPIError,)),
+            reraise=True,
+        ):
+            with attempt:
+                return await asyncio.to_thread(_call)
+        raise RuntimeError("describe_image unreachable")
 
     async def delete_file(self, file_id: str) -> None:
-        client = self._ensure_chat_client()
+        url = f"{settings.resolved_dashscope_files_base_url}/files/{file_id}"
+        http = self._ensure_http()
         try:
-            await client.files.delete(file_id)
+            resp = await http.delete(
+                url,
+                headers={"Authorization": f"Bearer {settings.dashscope_api_key}"},
+            )
+            if resp.status_code >= 400:
+                logger.warning("delete_file({}): status={} body={}", file_id, resp.status_code, resp.text)
         except Exception as e:
             logger.warning("delete_file({}): {}", file_id, e)
 
@@ -480,6 +667,7 @@ def get_dashscope_client() -> DashScopeClient:
     """进程内 DashScope 客户端单例。"""
     global _client
     if _client is None:
+        _ensure_sdk_configured()
         _client = DashScopeClient()
     return _client
 

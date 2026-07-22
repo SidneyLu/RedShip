@@ -59,6 +59,7 @@ async def run_rag_stream(
     message_id: str | None,
     query: str,
     history: list[dict[str, Any]] | None = None,
+    system_messages: list[dict[str, Any]] | None = None,
     attachments: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """执行 RAG 图并产出 chat 路由消费的 SSE 事件 dict。
@@ -73,6 +74,7 @@ async def run_rag_stream(
         "thread_id": thread_id,
         "query": query,
         "history": history or [],
+        "system_messages": system_messages or [],
         "attachments": attachments or [],
     }
 

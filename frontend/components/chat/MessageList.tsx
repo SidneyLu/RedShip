@@ -1,94 +1,141 @@
 "use client";
 
-/** 消息气泡列表；助手消息用 MarkdownMessage 渲染引用。 */
+/** 消息气泡列表；按 UIMessage parts 渲染 text / reasoning / citations。 */
 
-import { useEffect, useRef } from "react";
-import { Bot, User as UserIcon, BookOpen, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import type { ChatStatus } from "ai";
+import { Bot, User as UserIcon, BookOpen, ChevronDown, Sparkles, X } from "lucide-react";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { CitationPreviewProvider } from "@/components/citations/CitationPreviewProvider";
+import { CitationChip } from "@/components/citations/CitationChip";
 import { cn } from "@/lib/utils";
-import type { Citation, Message } from "@/lib/api";
-
-interface StreamingMessage {
-  id?: string;
-  tokens: string;
-  citations: Citation[];
-  mode: "chat" | "research";
-}
+import type { Citation } from "@/lib/api";
+import {
+  getMessageCitations,
+  getMessageReasoning,
+  getMessageText,
+  messageMode,
+  type RedShipUIMessage,
+} from "@/lib/chat-types";
 
 interface Props {
-  messages: Message[];
-  streaming?: StreamingMessage | null;
-  onCitationClick?: (citation: Citation, message: Message | StreamingMessage) => void;
-  stagedQuery?: string | null;
+  messages: RedShipUIMessage[];
+  status: ChatStatus;
+  error?: Error | undefined;
+  /** Fallback when message.metadata.mode is missing (e.g. mid-stream assistant). */
+  mode?: "chat" | "research";
+  onCitationClick?: (citation: Citation, message: RedShipUIMessage) => void;
+  onDismissError?: () => void;
 }
 
-export function MessageList({ messages, streaming, onCitationClick, stagedQuery }: Props) {
+export function MessageList({
+  messages,
+  status,
+  error,
+  mode = "chat",
+  onCitationClick,
+  onDismissError,
+}: Props) {
   const endRef = useRef<HTMLDivElement>(null);
+  const isStreaming = status === "streaming" || status === "submitted";
+  const last = messages[messages.length - 1];
+  const lastText = last ? getMessageText(last) : "";
+  const showTrailingTyping =
+    isStreaming && (!last || last.role === "user" || (last.role === "assistant" && !lastText));
+  const fallbackMode: "chat" | "research" = last?.metadata?.mode || mode;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [messages.length, streaming?.tokens.length, stagedQuery]);
+  }, [messages, isStreaming, error?.message, lastText]);
 
   return (
     <CitationPreviewProvider>
       <div className="space-y-6 px-1 py-4">
-        {messages.map((m) => (
-          <MessageBubble
-            key={m.id}
-            message={m}
-            onCitationClick={(c) => onCitationClick?.(c, m)}
-          />
-        ))}
-        {stagedQuery && (
-          <MessageBubble
-            message={{
-              id: "__staged_user",
-              thread_id: "",
-              role: "user",
-              mode: streaming?.mode || "chat",
-              content_markdown: stagedQuery,
-              citations: null,
-              created_at: new Date().toISOString(),
-            }}
-          />
-        )}
-        {streaming && (streaming.tokens.length > 0 || streaming.citations.length > 0) && (
-          <MessageBubble
-            message={{
-              id: streaming.id || "__streaming",
-              thread_id: "",
-              role: "assistant",
-              mode: streaming.mode,
-              content_markdown: streaming.tokens || "（正在生成…）",
-              citations: streaming.citations,
-              created_at: new Date().toISOString(),
-            }}
-            onCitationClick={(c) => onCitationClick?.(c, streaming)}
-          />
-        )}
+        {messages.map((m, idx) => {
+          const isLast = idx === messages.length - 1;
+          const showInlineTyping =
+            isLast &&
+            m.role === "assistant" &&
+            isStreaming &&
+            !getMessageText(m) &&
+            !showTrailingTyping;
+          return (
+            <MessageBubble
+              key={m.id}
+              message={m}
+              modeFallback={mode}
+              typing={Boolean(showInlineTyping)}
+              onCitationClick={(c) => onCitationClick?.(c, m)}
+            />
+          );
+        })}
+        {showTrailingTyping ? <TypingBubble mode={fallbackMode} /> : null}
+        {error ? (
+          <div
+            role="alert"
+            className="flex items-start justify-between gap-3 rounded-2xl border border-crimson-200 bg-crimson-50 px-4 py-3 text-sm text-crimson-800"
+          >
+            <span>{error.message || "生成失败，请重试。"}</span>
+            {onDismissError ? (
+              <button
+                type="button"
+                onClick={onDismissError}
+                className="shrink-0 rounded-lg p-1 text-crimson-700 hover:bg-crimson-100"
+                aria-label="关闭错误"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <div ref={endRef} />
       </div>
     </CitationPreviewProvider>
   );
 }
 
+function TypingBubble({ mode }: { mode: "chat" | "research" }) {
+  return (
+    <article className="flex w-full justify-start gap-3">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-crimson-100 text-crimson-700">
+        {mode === "research" ? <Sparkles className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+      </div>
+      <div className="max-w-[78%] rounded-2xl border border-border bg-card px-4 py-3 shadow-soft">
+        <TypingDots />
+      </div>
+    </article>
+  );
+}
+
+function TypingDots() {
+  return (
+    <span className="inline-flex items-center gap-1.5 py-1" aria-label="正在生成">
+      <span className="pulse-dot" />
+      <span className="pulse-dot delay-1" />
+      <span className="pulse-dot delay-2" />
+    </span>
+  );
+}
+
 function MessageBubble({
   message,
+  modeFallback = "chat",
+  typing,
   onCitationClick,
 }: {
-  message: Message;
+  message: RedShipUIMessage;
+  modeFallback?: "chat" | "research";
+  typing?: boolean;
   onCitationClick?: (c: Citation) => void;
 }) {
   const isUser = message.role === "user";
-  const isResearch = message.mode === "research" && !isUser;
+  const isResearch = (message.metadata?.mode || modeFallback) === "research" && !isUser;
+  const text = getMessageText(message);
+  const reasoning = getMessageReasoning(message);
+  const citations = getMessageCitations(message);
+
   return (
-    <article
-      className={cn(
-        "flex w-full gap-3",
-        isUser ? "justify-end" : "justify-start"
-      )}
-    >
+    <article className={cn("flex w-full gap-3", isUser ? "justify-end" : "justify-start")}>
       {!isUser && (
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-crimson-100 text-crimson-700">
           {isResearch ? <Sparkles className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
@@ -100,8 +147,8 @@ function MessageBubble({
           isUser
             ? "border-crimson-200 bg-crimson-600 text-white"
             : isResearch
-            ? "border-crimson-100 bg-card"
-            : "border-border bg-card"
+              ? "border-crimson-100 bg-card"
+              : "border-border bg-card"
         )}
       >
         {!isUser && isResearch && (
@@ -111,13 +158,29 @@ function MessageBubble({
           </div>
         )}
         {isUser ? (
-          <p className="whitespace-pre-wrap leading-7">{message.content_markdown}</p>
+          <p className="whitespace-pre-wrap leading-7">{text}</p>
         ) : (
-          <MarkdownMessage
-            content={message.content_markdown}
-            citations={message.citations}
-            onCitationClick={onCitationClick}
-          />
+          <div className="space-y-3">
+            {reasoning ? <ReasoningPanel text={reasoning} /> : null}
+            {typing && !text ? (
+              <TypingDots />
+            ) : text ? (
+              <MarkdownMessage content={text} citations={citations} onCitationClick={onCitationClick} />
+            ) : null}
+            {citations.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 border-t border-border/60 pt-2">
+                {citations.map((c) => (
+                  <CitationChip
+                    key={c.id}
+                    label={`(${c.ordinal})`}
+                    citation={c}
+                    onClick={onCitationClick}
+                    variant="report-inline"
+                  />
+                ))}
+              </div>
+            ) : null}
+          </div>
         )}
       </div>
       {isUser && (
@@ -126,5 +189,26 @@ function MessageBubble({
         </div>
       )}
     </article>
+  );
+}
+
+function ReasoningPanel({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-border/80 bg-canvas/50">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-medium text-muted hover:text-ink"
+      >
+        <span>思考过程</span>
+        <ChevronDown className={cn("h-3.5 w-3.5 transition", open && "rotate-180")} />
+      </button>
+      {open ? (
+        <div className="whitespace-pre-wrap border-t border-border/60 px-3 py-2 text-xs leading-6 text-muted">
+          {text}
+        </div>
+      ) : null}
+    </div>
   );
 }

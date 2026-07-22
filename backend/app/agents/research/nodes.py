@@ -37,10 +37,23 @@ def _parse_json(text: str) -> dict[str, Any]:
 
 async def planner(state: ResearchState) -> dict[str, Any]:
     """将用户问题分解为 sub_questions 与 plan_summary（JSON）。"""
-    messages = [
-        {"role": "system", "content": PLANNER_SYSTEM},
-        {"role": "user", "content": state["query"]},
-    ]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": PLANNER_SYSTEM}]
+    for sm in state.get("system_messages") or []:
+        if isinstance(sm, dict) and sm.get("content"):
+            messages.append({"role": "system", "content": sm["content"]})
+    for h in (state.get("history") or [])[-6:]:
+        if h.get("role") in {"user", "assistant"} and h.get("content"):
+            messages.append({"role": h["role"], "content": str(h["content"])[:1200]})
+    # 会话/知识库预检索摘要，帮助规划围绕已有材料
+    local_bits: list[str] = []
+    for p in (state.get("session_passages") or [])[:5]:
+        local_bits.append(f"[会话附件] {p.get('document_title') or ''}: {(p.get('snippet') or '')[:200]}")
+    for p in (state.get("kb_passages") or [])[:5]:
+        local_bits.append(f"[知识库] {p.get('document_title') or ''}: {(p.get('snippet') or '')[:200]}")
+    user_content = state["query"]
+    if local_bits:
+        user_content += "\n\n已召回的本地材料摘要：\n" + "\n".join(local_bits)
+    messages.append({"role": "user", "content": user_content})
     resp = await dashscope_client.chat(
         messages=messages,
         temperature=0.2,
@@ -251,16 +264,31 @@ async def reflector(state: ResearchState) -> dict[str, Any]:
         f"- ({e.get('iteration')}) [{e.get('title') or e.get('url','')}] {e.get('snippet','')[:160]}"
         for e in (state.get("evidence") or [])[:40]
     )
+    local_items = list(state.get("session_passages") or []) + list(state.get("kb_passages") or [])
+    local_summary = "\n".join(
+        f"- [{p.get('source')}] {p.get('document_title')}: {(p.get('snippet') or '')[:120]}"
+        for p in local_items[:12]
+    )
     user_payload = (
         f"原始问题：{state['query']}\n\n"
         f"已研究的子问题：\n- " + "\n- ".join(state.get("sub_questions") or []) + "\n\n"
-        f"已收集证据（截断）：\n{evidence_summary}\n"
+        f"本地材料（会话附件/知识库）：\n{local_summary or '（无）'}\n\n"
+        f"已收集联网证据（截断）：\n{evidence_summary}\n"
     )
+    history_bits = []
+    for h in (state.get("history") or [])[-4:]:
+        if h.get("content"):
+            history_bits.append(f"{h.get('role')}: {str(h['content'])[:400]}")
+    if history_bits:
+        user_payload += "\n近期对话：\n" + "\n".join(history_bits)
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": REFLECTOR_SYSTEM}]
+    for sm in state.get("system_messages") or []:
+        if isinstance(sm, dict) and sm.get("content"):
+            messages.append({"role": "system", "content": str(sm["content"])[:2000]})
+    messages.append({"role": "user", "content": user_payload})
     resp = await dashscope_client.chat(
-        messages=[
-            {"role": "system", "content": REFLECTOR_SYSTEM},
-            {"role": "user", "content": user_payload},
-        ],
+        messages=messages,
         temperature=0.2,
         response_format={"type": "json_object"},
     )
@@ -275,22 +303,60 @@ async def reflector(state: ResearchState) -> dict[str, Any]:
     }
 
 
-def build_citations(evidence: list[ResearchEvidence]) -> list[dict[str, Any]]:
-    """将 evidence 去重 URL 后转为前端 citation 结构（source_type=web）。"""
+def build_citations(
+    evidence: list[ResearchEvidence],
+    *,
+    session_passages: list[dict[str, Any]] | None = None,
+    kb_passages: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """合并本地段落与联网 evidence 为前端 citation 结构。"""
     citations: list[dict[str, Any]] = []
-    seen_urls: dict[str, int] = {}
     ordinal = 1
+
+    for raw in session_passages or []:
+        citations.append(
+            {
+                "ordinal": ordinal,
+                "id": f"s-{ordinal}",
+                "title": raw.get("document_title") or "会话附件",
+                "snippet": raw.get("snippet") or "",
+                "highlight_text": raw.get("snippet") or "",
+                "content": raw.get("parent_text") or raw.get("snippet") or "",
+                "heading_path": raw.get("heading_path") or "",
+                "source_type": "session",
+                "doc_id": raw.get("doc_id") or "",
+            }
+        )
+        ordinal += 1
+
+    for raw in kb_passages or []:
+        citations.append(
+            {
+                "ordinal": ordinal,
+                "id": f"k-{ordinal}",
+                "title": raw.get("document_title") or "知识库",
+                "snippet": raw.get("snippet") or "",
+                "highlight_text": raw.get("snippet") or "",
+                "content": raw.get("parent_text") or raw.get("snippet") or "",
+                "heading_path": raw.get("heading_path") or "",
+                "source_type": "kb",
+                "doc_id": raw.get("doc_id") or "",
+                "relative_path": raw.get("relative_path") or "",
+            }
+        )
+        ordinal += 1
+
+    seen_urls: dict[str, int] = {}
     for e in evidence:
         url = e.get("url", "") or ""
         if not url and not e.get("title"):
             continue
         if url and url in seen_urls:
             continue
-        cid = f"r-{ordinal}"
         citations.append(
             {
                 "ordinal": ordinal,
-                "id": cid,
+                "id": f"r-{ordinal}",
                 "title": e.get("title", "") or e.get("site_name", "网络来源"),
                 "snippet": e.get("snippet", ""),
                 "highlight_text": e.get("snippet", ""),
@@ -320,7 +386,7 @@ async def writer_stream(
 
     evidence_block_parts: list[str] = []
     for c in citations:
-        header = f"[{c['ordinal']}] id={c['id']} title=《{c.get('title','')}》"
+        header = f"[{c['ordinal']}] id={c['id']} type={c.get('source_type')} title=《{c.get('title','')}》"
         if c.get("url"):
             header += f" url={c['url']}"
         body = c.get("content") or c.get("snippet") or ""
@@ -333,10 +399,14 @@ async def writer_stream(
         f"# 证据列表\n{evidence_block}\n\n"
         "请基于以上证据撰写最终研究报告。"
     )
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_payload},
-    ]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    for sm in state.get("system_messages") or []:
+        if isinstance(sm, dict) and sm.get("content"):
+            messages.append({"role": "system", "content": str(sm["content"])[:3000]})
+    for h in (state.get("history") or [])[-4:]:
+        if h.get("role") in {"user", "assistant"} and h.get("content"):
+            messages.append({"role": h["role"], "content": str(h["content"])[:1500]})
+    messages.append({"role": "user", "content": user_payload})
     async for chunk in dashscope_client.chat_stream(
         messages=messages,
         model=settings.research_model,

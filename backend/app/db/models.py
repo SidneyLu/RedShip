@@ -48,7 +48,7 @@ class User(Base, TimestampMixin):
 
 
 class Document(Base, TimestampMixin):
-    """知识库源文档：bibliography 目录、管理员 upload 或会话衍生。"""
+    """知识库源文档：bibliography 目录或管理员 upload（不含用户会话附件）。"""
 
     __tablename__ = "documents"
 
@@ -165,6 +165,24 @@ class SessionFile(Base, TimestampMixin):
     extra_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     thread: Mapped[Thread] = relationship(back_populates="session_files")
+
+
+class UserMemory(Base, TimestampMixin):
+    """用户跨会话长期记忆；向量存于 Milvus user_memory collection。"""
+
+    __tablename__ = "user_memories"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="fact")
+    source_thread_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extra_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (Index("ix_user_memories_user_created", "user_id", "created_at"),)
 
 
 class AuditLog(Base):

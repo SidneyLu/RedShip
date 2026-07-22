@@ -23,6 +23,7 @@ class RagState(TypedDict, total=False):
     user_id: str
     query: str
     history: list[dict[str, Any]]
+    system_messages: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
 
     rewritten_query: str

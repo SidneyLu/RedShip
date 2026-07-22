@@ -4,7 +4,7 @@
 
 import { useMemo } from "react";
 import { Loader2, Search, Compass, Lightbulb, PencilLine, BookOpen, Sparkles } from "lucide-react";
-import type { ResearchStep } from "./useChatStream";
+import type { ResearchStep } from "@/lib/chat-types";
 
 const STEP_LABELS: Record<string, string> = {
   planning: "规划子问题",
@@ -34,18 +34,20 @@ export function ResearchProgress({
   loading,
   stage,
   compact = false,
+  title = "深度研究进度",
 }: {
   steps: ResearchStep[];
   loading: boolean;
   stage: string | null;
   compact?: boolean;
+  title?: string;
 }) {
   const filteredSteps = useMemo(
     () => steps.filter((s) => s.step !== "extracted" || s.title || s.url),
     [steps]
   );
 
-  if (!loading && filteredSteps.length === 0) return null;
+  if (!loading && filteredSteps.length === 0 && !stage) return null;
 
   if (compact) {
     const visibleSteps = filteredSteps.slice(-5);
@@ -54,7 +56,7 @@ export function ResearchProgress({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-crimson-800">
             <Sparkles className="h-4 w-4" />
-            深度研究进度
+            {title}
           </div>
           <div className="flex items-center gap-2 text-xs text-muted">
             {stage ? <span>当前阶段：{stage}</span> : null}
@@ -95,7 +97,7 @@ export function ResearchProgress({
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-semibold text-crimson-800">
           <Sparkles className="h-4 w-4" />
-          深度研究进度
+          {title}
         </div>
         {loading ? (
           <Loader2 className="h-4 w-4 animate-spin text-crimson-600" />

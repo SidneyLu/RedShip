@@ -117,6 +117,11 @@ def _run_mineru(path: Path) -> str:
             "-b",
             settings.mineru_backend,
         ]
+        # auto：文字 PDF 走 txt，扫描件走 OCR；强制 OCR 时用 ocr
+        if settings.mineru_ocr:
+            cmd.extend(["-m", "ocr"])
+        else:
+            cmd.extend(["-m", "txt"])
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -148,6 +153,12 @@ def _parse_with_mineru(path: Path, *, fmt: str) -> ParsedDocument:
     )
 
 
+SUPPORTED_EXTENSIONS = {".md", ".markdown", ".pdf", ".docx", ".txt", ".text"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+SESSION_UPLOAD_EXTENSIONS = SUPPORTED_EXTENSIONS | IMAGE_EXTENSIONS
+MARKDOWN_ONLY_EXTENSIONS = {".md", ".markdown"}
+
+
 def parse_document(path: Path) -> ParsedDocument:
     ext = path.suffix.lower()
     if ext in {".md", ".markdown"}:
@@ -158,11 +169,26 @@ def parse_document(path: Path) -> ParsedDocument:
         return _parse_with_mineru(path, fmt="pdf")
     if ext == ".docx":
         return _parse_with_mineru(path, fmt="docx")
+    if ext in IMAGE_EXTENSIONS:
+        raise ValueError(
+            f"Image files must be parsed via DashScope vision (got {ext}); "
+            "use parse_image_document()."
+        )
     raise ValueError(f"Unsupported file type: {ext}")
 
 
-SUPPORTED_EXTENSIONS = {".md", ".markdown", ".pdf", ".docx", ".txt", ".text"}
-MARKDOWN_ONLY_EXTENSIONS = {".md", ".markdown"}
+async def parse_image_document(path: Path) -> ParsedDocument:
+    """图片：VL OCR + 描述 → 单 section 文档。"""
+    from app.llm.dashscope import dashscope_client
+
+    text = (await dashscope_client.describe_image(path)).strip()
+    if not text:
+        raise ValueError(f"No text could be extracted from image: {path.name}")
+    return ParsedDocument(
+        title=path.stem,
+        sections=[Section(heading_path=path.stem, text=text)],
+        metadata={"format": path.suffix.lstrip("."), "parser": "vision"},
+    )
 
 
 def bibliography_extensions() -> set[str]:

@@ -2,7 +2,7 @@
 
 严格双路径，无运行时回退：
   ≤ FILES_API_INLINE_MAX_TOKENS → DashScope Files API（system 中 fileid://）
-  > 阈值 → MinerU 解析 → 分块 → embed → Milvus namespace（thread 隔离）
+  > 阈值 / 图片 → 解析 → 分块 → embed → Milvus session_chunks（与 knowledge_base 隔离）
 """
 from __future__ import annotations
 
@@ -23,7 +23,12 @@ from app.knowledge.indexer import (
     upsert_chunks,
 )
 from app.knowledge.ingestion.chunker import chunk_document
-from app.knowledge.ingestion.parser import parse_document
+from app.knowledge.ingestion.parser import (
+    IMAGE_EXTENSIONS,
+    SESSION_UPLOAD_EXTENSIONS,
+    parse_document,
+    parse_image_document,
+)
 from app.llm.dashscope import dashscope_client
 
 
@@ -44,16 +49,18 @@ def _file_sha(path: Path) -> str:
 
 
 def _uses_files_api(path: Path) -> bool:
-    """上传前判定走 Files API 还是会话 Milvus；判定后不可切换。"""
+    """上传前判定走 Files API 还是会话 Milvus；图片一律 session_rag。"""
     ext = path.suffix.lower()
     size = path.stat().st_size
+
+    if ext in IMAGE_EXTENSIONS:
+        return False
 
     if ext in {".md", ".markdown", ".txt", ".text"}:
         text = path.read_text(encoding="utf-8", errors="strict")
         return _estimate_tokens(text) <= settings.files_api_inline_max_tokens
 
     if ext in {".pdf", ".docx"}:
-        # Binary formats: size heuristic aligned with ~60 pages / 100k tokens in PLAN.
         return size <= settings.files_api_inline_max_bytes
 
     raise ValueError(f"Unsupported session upload type: {ext}")
@@ -97,14 +104,25 @@ async def _ingest_session_rag(
     size: int,
     ext: str,
 ) -> SessionFile:
-    parsed = parse_document(storage_path)
+    if ext in IMAGE_EXTENSIONS:
+        parsed = await parse_image_document(storage_path)
+    else:
+        parsed = parse_document(storage_path)
+
+    full = parsed.full_text().strip()
+    if ext in ({".pdf", ".docx"} | IMAGE_EXTENSIONS) and len(full) < settings.session_min_extract_chars:
+        raise ValueError(
+            f"Extracted text too short ({len(full)} chars) for {original_filename}. "
+            "若为扫描件请确认 MINERU_OCR=true；图片请检查 VISION_MODEL 可用性。"
+        )
+
     parents = chunk_document(parsed)
     children = [c for p in parents for c in p.children]
     if not children:
         raise ValueError("No content could be extracted from the uploaded file.")
 
     embeddings = await dashscope_client.embed([c.text for c in children])
-    collection = ensure_collection(settings.milvus_kb_collection)
+    collection = ensure_collection(settings.milvus_session_collection)
     namespace = f"{settings.session_doc_chunk_prefix}{thread_id}"
     fake_doc_id = f"sess_{thread_id}_{sha[:12]}"
 
@@ -154,6 +172,12 @@ async def ingest_session_file(
     sha = _file_sha(storage_path)
     size = storage_path.stat().st_size
     ext = storage_path.suffix.lower()
+    if ext not in SESSION_UPLOAD_EXTENSIONS:
+        raise ValueError(f"Unsupported session upload type: {ext}")
+    if ext in IMAGE_EXTENSIONS and size > settings.session_image_max_bytes:
+        raise ValueError(
+            f"Image too large ({size} bytes); max {settings.session_image_max_bytes}"
+        )
 
     if _uses_files_api(storage_path):
         logger.info("Session file {} → Files API path", original_filename)
@@ -167,7 +191,7 @@ async def ingest_session_file(
             ext=ext,
         )
 
-    logger.info("Session file {} → MinerU + session RAG path", original_filename)
+    logger.info("Session file {} → session RAG path", original_filename)
     return await _ingest_session_rag(
         session,
         thread_id=thread_id,
@@ -182,7 +206,7 @@ async def ingest_session_file(
 async def purge_session_file_vectors(row: SessionFile) -> None:
     from app.knowledge.indexer import drop_doc, drop_namespace
 
-    collection = settings.milvus_kb_collection
+    collection = settings.milvus_session_collection
     if row.mode == "session_rag":
         meta = row.extra_metadata or {}
         doc_id = meta.get("doc_id")

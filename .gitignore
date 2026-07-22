@@ -1,3 +1,60 @@
-bibliography
-.cursor
-.idea
+# --- Secrets & local-only ---
+.env
+.env.*
+!.env.example
+.local/
+secrets-backup/
+*.pem
+*.key
+credentials*.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Node / Next.js ---
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Build / tooling ---
+dist/
+build/
+*.tsbuildinfo
+.turbo/
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+.cursor/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Project data & exports ---
+bibliography/
+export/
+raw/
+backend/data/
+**/uploads/
+
+# --- Legacy local env ---
+legacy/**/.env
+legacy/**/.env.*
+!legacy/**/.env.example

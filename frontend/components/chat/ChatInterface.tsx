@@ -1,110 +1,245 @@
 "use client";
 
-/** 主聊天区：线程列表、消息流、模式切换（chat/research）、Composer 与 SSE 流。 */
+/** 主聊天区：线程列表、useChat 消息流、模式切换（chat/research）、Composer。 */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 import { Loader2, MessageSquare, Sparkles } from "lucide-react";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ResearchProgress } from "./ResearchProgress";
 import { ThreadList } from "@/components/chat/ThreadList";
-import { useChatStream } from "./useChatStream";
-import { api, type Citation, type Message, type ThreadWithMessages, type Thread } from "@/lib/api";
+import { api, getApiBase, getToken, type Citation, type ThreadWithMessages, type Thread } from "@/lib/api";
 import { useAuth } from "@/components/providers/AuthProvider";
+import {
+  getResearchStepsFromMessages,
+  toUIMessages,
+  type RedShipUIMessage,
+  type ResearchStep,
+} from "@/lib/chat-types";
 
 interface ChatInterfaceProps {
   initialThreadId?: string | null;
 }
 
+function chatApiUrl(): string {
+  const base = getApiBase().replace(/\/$/, "");
+  return base ? `${base}/api/chat` : "/api/chat";
+}
+
 export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
   const { user } = useAuth();
   const router = useRouter();
-  const { state, send, cancel } = useChatStream();
 
   const [mode, setMode] = useState<"chat" | "research">("chat");
-  const [thread, setThread] = useState<ThreadWithMessages | null>(null);
+  const [threadMeta, setThreadMeta] = useState<ThreadWithMessages | null>(null);
   const [threadId, setThreadId] = useState<string | null>(initialThreadId || null);
-  const [stagedQuery, setStagedQuery] = useState<string | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
+  const [stage, setStage] = useState<string | null>(null);
+  const [liveResearchSteps, setLiveResearchSteps] = useState<ResearchStep[]>([]);
+
+  const threadIdRef = useRef(threadId);
+  const modeRef = useRef(mode);
+  threadIdRef.current = threadId;
+  modeRef.current = mode;
 
   const reloadThreads = useCallback(async () => {
     try {
       const list = await api<Thread[]>("/api/threads");
       setThreads(list);
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   }, []);
+  const reloadThreadsRef = useRef(reloadThreads);
+  reloadThreadsRef.current = reloadThreads;
+
+  const transport = useMemo(
+    () =>
+      new DefaultChatTransport<RedShipUIMessage>({
+        api: chatApiUrl(),
+        headers: () => {
+          const token = getToken();
+          const h: Record<string, string> = {};
+          if (token) h.Authorization = `Bearer ${token}`;
+          return h;
+        },
+        prepareSendMessagesRequest: ({ messages, id, headers }) => ({
+          headers,
+          body: {
+            id: threadIdRef.current || id,
+            thread_id: threadIdRef.current,
+            mode: modeRef.current,
+            // 后端只取最后一条 user 文本；减少 payload
+            messages: messages.slice(-1),
+          },
+        }),
+      }),
+    []
+  );
+
+  const {
+    messages,
+    setMessages,
+    sendMessage,
+    status,
+    stop,
+    error,
+    clearError,
+  } = useChat<RedShipUIMessage>({
+    transport,
+    onData: (dataPart) => {
+      if (dataPart.type === "data-ack") {
+        const tid = dataPart.data?.thread_id;
+        if (tid && tid !== threadIdRef.current) {
+          setThreadId(tid);
+          router.replace(`/?thread=${tid}`);
+        }
+        return;
+      }
+      if (dataPart.type === "data-stage") {
+        const label =
+          (typeof dataPart.data?.label === "string" && dataPart.data.label) ||
+          (typeof dataPart.data?.name === "string" && dataPart.data.name) ||
+          null;
+        setStage(label);
+        if (dataPart.data?.name === "analysis" || dataPart.data?.rewritten_query) {
+          setLiveResearchSteps((prev) => [
+            ...prev,
+            {
+              step: "analysis",
+              query: String(dataPart.data?.rewritten_query || ""),
+              timestamp: Date.now(),
+            },
+          ]);
+        }
+        return;
+      }
+      if (dataPart.type === "data-research-step" && dataPart.data?.step) {
+        setLiveResearchSteps((prev) => [
+          ...prev,
+          { ...dataPart.data, timestamp: Date.now() },
+        ]);
+      }
+    },
+    onFinish: async ({ isAbort, isError, message }) => {
+      setStage(null);
+      const tid =
+        threadIdRef.current ||
+        message.metadata?.threadId ||
+        undefined;
+      if (!tid || isAbort || isError) {
+        void reloadThreadsRef.current();
+        return;
+      }
+      try {
+        const fresh = await api<ThreadWithMessages>(`/api/threads/${tid}`);
+        setThreadMeta(fresh);
+        setMessages(toUIMessages(fresh.messages));
+        setLiveResearchSteps([]);
+      } catch {
+        /* keep streamed messages */
+      }
+      void reloadThreadsRef.current();
+    },
+  });
+
+  const isBusy = status === "submitted" || status === "streaming";
 
   useEffect(() => {
     if (!user) return;
     reloadThreads();
   }, [user, reloadThreads]);
 
+  // 线程加载 / 切换 → hydrate UIMessage
   useEffect(() => {
     if (!threadId) {
-      setThread(null);
+      setThreadMeta(null);
       return;
     }
+    let cancelled = false;
     api<ThreadWithMessages>(`/api/threads/${threadId}`)
       .then((t) => {
-        setThread(t);
+        if (cancelled) return;
+        setThreadMeta(t);
         setMode(t.mode);
+        // 流式进行中不要覆盖 in-flight messages（ack 刚写入 URL 时）
+        if (status === "ready" || status === "error") {
+          setMessages(toUIMessages(t.messages));
+          setLiveResearchSteps([]);
+          setStage(null);
+          clearError();
+        }
       })
       .catch(() => {
-        setThread(null);
+        if (!cancelled) setThreadMeta(null);
       });
+    return () => {
+      cancelled = true;
+    };
+    // status intentionally omitted: only re-hydrate when threadId changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
-  const messages: Message[] = useMemo(() => thread?.messages ?? [], [thread]);
+  const researchSteps = useMemo(() => {
+    const fromParts = getResearchStepsFromMessages(messages);
+    if (liveResearchSteps.length === 0) return fromParts;
+    // Prefer live steps during stream (parts may lag / reconcile by id)
+    if (isBusy) return liveResearchSteps;
+    return fromParts.length > 0 ? fromParts : liveResearchSteps;
+  }, [messages, liveResearchSteps, isBusy]);
 
   const handleSend = useCallback(
     async (query: string) => {
-      setStagedQuery(query);
-      await send({
-        threadId,
-        query,
-        mode,
-        onAck: (ev) => {
-          if (ev.thread_id && ev.thread_id !== threadId) {
-            setThreadId(ev.thread_id);
-            router.replace(`/?thread=${ev.thread_id}`);
-          }
-        },
-        onDone: async ({ threadId: tid }) => {
-          setStagedQuery(null);
-          try {
-            const fresh = await api<ThreadWithMessages>(`/api/threads/${tid}`);
-            setThread(fresh);
-          } catch {}
-          reloadThreads();
-        },
+      clearError();
+      setStage(null);
+      setLiveResearchSteps([]);
+      await sendMessage({
+        text: query,
+        metadata: { threadId: threadId ?? undefined, mode },
       });
     },
-    [send, threadId, mode, router, reloadThreads]
+    [sendMessage, threadId, mode, clearError]
   );
 
+  const handleStop = useCallback(() => {
+    void stop();
+    setStage(null);
+  }, [stop]);
+
   const handleCitationClick = useCallback(
-    (citation: Citation, message: Message | { id?: string }) => {
-      const msgId = (message as Message).id || state.assistantMessageId || "__streaming";
-      const tid = thread?.id || state.threadId;
+    (citation: Citation, message: RedShipUIMessage) => {
+      const msgId = message.id;
+      const tid = threadMeta?.id || threadId || message.metadata?.threadId;
       if (!tid || !msgId) return;
       router.push(`/threads/${tid}/messages/${msgId}/citations/${citation.id}`);
     },
-    [router, thread, state.threadId, state.assistantMessageId]
+    [router, threadMeta, threadId]
   );
 
   const startNewThread = useCallback(
     (nextMode: "chat" | "research") => {
+      void stop();
       setMode(nextMode);
       setThreadId(null);
-      setThread(null);
-      setStagedQuery(null);
+      setThreadMeta(null);
+      setMessages([]);
+      setLiveResearchSteps([]);
+      setStage(null);
+      clearError();
       router.replace("/");
     },
-    [router]
+    [router, setMessages, stop, clearError]
   );
 
   const onPickThread = (t: Thread) => {
+    void stop();
+    setMessages([]);
+    setLiveResearchSteps([]);
+    setStage(null);
+    clearError();
     setThreadId(t.id);
     router.replace(`/?thread=${t.id}`);
   };
@@ -112,20 +247,24 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
   const ensureThread = useCallback(async () => {
     if (threadId) return threadId;
     try {
-      const t = await api<Thread>("/api/threads", { method: "POST", json: { title: "新对话", mode } });
+      const t = await api<Thread>("/api/threads", {
+        method: "POST",
+        json: { title: "新对话", mode },
+      });
       setThreadId(t.id);
-      setThread({ ...t, messages: [] });
+      setThreadMeta({ ...t, messages: [] });
+      setMessages([]);
       router.replace(`/?thread=${t.id}`);
       reloadThreads();
       return t.id;
     } catch {
       return null;
     }
-  }, [threadId, mode, router, reloadThreads]);
+  }, [threadId, mode, router, reloadThreads, setMessages]);
 
-  const activeTitle = thread?.title || (mode === "research" ? "新的深度研究" : "新的快速问答");
-  const visibleMessageCount =
-    messages.length + (stagedQuery ? 1 : 0) + (state.loading ? 1 : 0);
+  const activeTitle =
+    threadMeta?.title || (mode === "research" ? "新的深度研究" : "新的快速问答");
+  const visibleMessageCount = messages.length;
 
   return (
     <main className="min-h-screen p-2 md:p-3">
@@ -152,15 +291,19 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
                   </h2>
                   <p className="mt-2 text-sm text-muted">
                     {mode === "research" ? "深度研究" : "快速问答"} · {visibleMessageCount} 条消息
-                    {state.stage ? ` · ${state.stage}` : ""}
+                    {stage ? ` · ${stage}` : ""}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="chip">
-                    {mode === "research" ? <Sparkles className="h-3.5 w-3.5" /> : <MessageSquare className="h-3.5 w-3.5" />}
+                    {mode === "research" ? (
+                      <Sparkles className="h-3.5 w-3.5" />
+                    ) : (
+                      <MessageSquare className="h-3.5 w-3.5" />
+                    )}
                     {mode === "research" ? "深度研究" : "快速问答"}
                   </span>
-                  {state.loading ? (
+                  {isBusy ? (
                     <span className="chip">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       生成中
@@ -171,30 +314,24 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
             </header>
 
             <ResearchProgress
-              steps={state.researchSteps}
-              loading={state.loading && mode === "research"}
-              stage={state.stage}
+              steps={researchSteps}
+              loading={isBusy}
+              stage={stage}
               compact
+              title={mode === "research" ? "深度研究进度" : "处理进度"}
             />
 
             <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1 scroll-pretty">
-              {messages.length === 0 && !stagedQuery && !state.loading ? (
+              {messages.length === 0 && !isBusy ? (
                 <EmptyState mode={mode} />
               ) : (
                 <MessageList
                   messages={messages}
-                  streaming={
-                    state.loading
-                      ? {
-                          id: state.assistantMessageId || undefined,
-                          tokens: state.tokens,
-                          citations: state.citations,
-                          mode,
-                        }
-                      : null
-                  }
-                  stagedQuery={stagedQuery}
+                  status={status}
+                  error={error}
+                  mode={mode}
                   onCitationClick={handleCitationClick}
+                  onDismissError={clearError}
                 />
               )}
             </div>
@@ -203,10 +340,10 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
               <Composer
                 mode={mode}
                 onModeChange={setMode}
-                threadId={thread?.id || state.threadId}
-                loading={state.loading}
+                threadId={threadMeta?.id || threadId}
+                loading={isBusy}
                 onSend={handleSend}
-                onCancel={cancel}
+                onStop={handleStop}
                 onEnsureThread={ensureThread}
               />
             </div>

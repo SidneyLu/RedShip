@@ -25,6 +25,7 @@ class ResearchState(TypedDict, total=False):
     user_id: str
     query: str
     history: list[dict[str, Any]]
+    system_messages: list[dict[str, Any]]
 
     sub_questions: list[str]
     follow_ups: list[str]
@@ -38,3 +39,5 @@ class ResearchState(TypedDict, total=False):
     gaps: list[str]
     citations: list[dict[str, Any]]
     report_markdown: str
+    session_passages: list[dict[str, Any]]
+    kb_passages: list[dict[str, Any]]

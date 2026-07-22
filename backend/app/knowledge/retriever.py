@@ -150,20 +150,20 @@ async def retrieve(
     if not query.strip():
         return []
 
-    collection = await asyncio.to_thread(
-        ensure_collection, collection_name or settings.milvus_kb_collection
-    )
+    kb_name = collection_name or settings.milvus_kb_collection
+    await asyncio.to_thread(ensure_collection, kb_name)
 
     [dense] = await dashscope_client.embed(query)
     recall_k = top_k or settings.retrieval_top_k
 
-    kb_filter = 'source == "bibliography"'
+    # 管理员知识库：bibliography / upload（不含 session）
+    kb_filter = '(source == "bibliography" or source == "upload")'
     if extra_filter:
         kb_filter = f"({kb_filter}) and ({extra_filter})"
 
     kb_hits: list[HybridSearchHit] = await asyncio.to_thread(
         hybrid_search,
-        collection_name=collection,
+        collection_name=kb_name,
         query_text=query,
         query_dense=dense,
         top_k=recall_k,
@@ -175,9 +175,11 @@ async def retrieve(
     if thread_id:
         session_filter = await session_namespace_filter(session, thread_id)
         if session_filter:
+            session_name = settings.milvus_session_collection
+            await asyncio.to_thread(ensure_collection, session_name)
             session_hits = await asyncio.to_thread(
                 hybrid_search,
-                collection_name=collection,
+                collection_name=session_name,
                 query_text=query,
                 query_dense=dense,
                 top_k=recall_k,
