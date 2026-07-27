@@ -157,6 +157,25 @@ class UIMessageStreamEncoder:
                 )
             ]
 
+        if etype == "artifact":
+            art_id = str(ev.get("id") or "artifact")
+            data = {
+                "id": art_id,
+                "title": ev.get("title") or "可视化",
+                "language": ev.get("language") or "html",
+                "code": ev.get("code") or "",
+                "status": ev.get("status") or "done",
+            }
+            return [
+                format_sse(
+                    {
+                        "type": "data-artifact",
+                        "id": art_id,
+                        "data": data,
+                    }
+                )
+            ]
+
         if etype == "citations_ready":
             return [
                 format_sse(

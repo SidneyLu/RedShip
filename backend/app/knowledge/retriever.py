@@ -48,10 +48,12 @@ class RetrievedPassage:
     series: str = ""
     relative_path: str = ""
     namespace: str = ""
+    preview_mode: str = "text"
+    media_url: str = ""
 
     def to_citation(self, ordinal: int) -> dict:
         """转为 SSE citation 事件与 Message.citations JSON 结构。"""
-        return {
+        out: dict = {
             "ordinal": ordinal,
             "id": self.id,
             "doc_id": self.doc_id,
@@ -68,7 +70,11 @@ class RetrievedPassage:
             "score": round(self.score, 4),
             "locator_label": self.heading_path or self.relative_path or self.document_title,
             "previewable": True,
+            "preview_mode": self.preview_mode or "text",
         }
+        if self.media_url:
+            out["media_url"] = self.media_url
+        return out
 
 
 async def _hits_to_passages(
@@ -111,6 +117,12 @@ async def _hits_to_passages(
         parent = parents_by_key.get((h.doc_id, h.parent_index))
         parent_text = parent.parent_text if parent else h.text
         title = doc.title if doc else session_titles.get(h.doc_id, h.doc_id)
+        preview_mode = "text"
+        media_url = ""
+        if doc and isinstance(doc.extra_metadata, dict):
+            if doc.extra_metadata.get("media_type") == "image":
+                preview_mode = "image"
+                media_url = f"/api/knowledge/documents/{doc.id}/media"
         passages.append(
             RetrievedPassage(
                 id=f"c-{i}",
@@ -126,6 +138,8 @@ async def _hits_to_passages(
                 series=doc.series if doc and doc.series else "",
                 relative_path=doc.relative_path if doc and doc.relative_path else "",
                 namespace=h.namespace,
+                preview_mode=preview_mode,
+                media_url=media_url,
             )
         )
     return passages

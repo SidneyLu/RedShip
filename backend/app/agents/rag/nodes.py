@@ -1,15 +1,19 @@
-"""Pipeline RAG 图节点：分析、检索、合并证据、流式生成。
+"""Pipeline RAG 图节点：分析、本地检索、门控联网、抽取、合并证据、流式生成。
 
-query_analyzer 输出 route（kb|web|hybrid）；generator_stream 产出 token/reasoning SSE。
+流程（本地优先）：
+  query_analyzer → kb_retriever（route≠web）→ maybe_web
+    → [web_searcher → web_extractor] 或跳过 → evidence_merger → generator_stream
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.rag.prompts import (
@@ -20,7 +24,10 @@ from app.agents.rag.prompts import (
 from app.agents.rag.state import RagState, WebHit
 from app.core.config import settings
 from app.core.redis import cache_get_json, cache_set_json
+from app.db.models import SessionFile
+from app.knowledge.ingestion.parser import IMAGE_EXTENSIONS
 from app.knowledge.retriever import RetrievedPassage, retrieve
+from app.knowledge.web_extract import extract_urls
 from app.llm.dashscope import dashscope_client
 
 
@@ -46,17 +53,41 @@ def _safe_json_loads(text: str) -> dict[str, Any]:
             return {}
 
 
-async def query_analyzer(state: RagState) -> dict[str, Any]:
-    """分析用户问题并决定检索路由。
+async def _image_query_hint(session: AsyncSession, thread_id: str | None) -> str:
+    """取会话最新图片，用 VL 描述增强检索 query。"""
+    if not thread_id:
+        return ""
+    rows = (
+        await session.execute(
+            select(SessionFile)
+            .where(SessionFile.thread_id == thread_id)
+            .order_by(SessionFile.created_at.desc())
+        )
+    ).scalars().all()
+    for f in rows:
+        name = (f.filename or "").lower()
+        ext = Path(name).suffix.lower()
+        if ext not in IMAGE_EXTENSIONS:
+            continue
+        path = f.storage_path
+        if not path or not Path(path).is_file():
+            continue
+        try:
+            desc = (await dashscope_client.describe_image(path)).strip()
+            if desc:
+                return f"【会话附图《{f.filename}》视觉描述】\n{desc[:1200]}"
+        except Exception as e:
+            logger.warning("image query rewrite failed for {}: {}", path, e)
+        break
+    return ""
 
-    调用 CHAT_MODEL（默认 qwen3.5-flash），要求 JSON：rewritten、route(kb|web|hybrid)、实体字段。
-    写入 rewritten_query、entities、route。
-    """
+
+async def query_analyzer(state: RagState, *, session: AsyncSession) -> dict[str, Any]:
+    """分析用户问题并决定检索路由；会话附图时注入 VL 描述增强 rewritten。"""
     query = state["query"]
     history = state.get("history") or []
     system_messages = state.get("system_messages") or []
     messages: list[dict[str, Any]] = [{"role": "system", "content": QUERY_ANALYZER_SYSTEM}]
-    # 受保护 system（摘要 / fileid / 长期记忆）单独前置，不进窗口截断
     for sm in system_messages:
         if isinstance(sm, dict) and sm.get("content"):
             messages.append({"role": "system", "content": sm["content"]})
@@ -74,43 +105,63 @@ async def query_analyzer(state: RagState) -> dict[str, Any]:
     data = _safe_json_loads(content)
     if not isinstance(data, dict) or not data:
         logger.warning("query_analyzer returned invalid JSON; using default kb route")
-        return {
-            "rewritten_query": query,
-            "entities": {
-                "persons": [],
-                "organizations": [],
-                "events": [],
-                "timeframe": "",
-                "era": "",
-            },
-            "route": "kb",
-        }
-    route = (data.get("route") or "kb").lower()
-    if route not in {"kb", "web", "hybrid"}:
+        rewritten = query
         route = "kb"
-    return {
-        "rewritten_query": data.get("rewritten") or query,
-        "entities": {
+        entities = {
+            "persons": [],
+            "organizations": [],
+            "events": [],
+            "timeframe": "",
+            "era": "",
+        }
+    else:
+        route = (data.get("route") or "kb").lower()
+        if route not in {"kb", "web", "hybrid"}:
+            route = "kb"
+        rewritten = data.get("rewritten") or query
+        entities = {
             "persons": data.get("persons") or [],
             "organizations": data.get("organizations") or [],
             "events": data.get("events") or [],
             "timeframe": data.get("timeframe") or "",
             "era": data.get("era") or "",
-        },
+        }
+
+    image_hint = await _image_query_hint(session, state.get("thread_id"))
+    if image_hint:
+        rewritten = f"{rewritten}\n\n{image_hint}"
+
+    return {
+        "rewritten_query": rewritten,
+        "entities": entities,
         "route": route,
     }
 
 
-def route_decision(state: RagState) -> list[str]:
-    """根据 route 返回要并行执行的节点名列表（供 LangGraph Send）。"""
+def entry_after_analyzer(state: RagState) -> str:
+    """analyzer 之后：纯 web 走联网分支，其余先本地检索。"""
+    if (state.get("route") or "kb").lower() == "web":
+        return "web_searcher"
+    return "kb_retriever"
+
+
+def kb_evidence_sufficient(state: RagState) -> bool:
+    """本地命中是否足以跳过联网。"""
+    passages = state.get("kb_passages") or []
+    if len(passages) < settings.rag_kb_min_hits:
+        return False
+    scores = [float(p.get("score") or 0) for p in passages]
+    if not scores:
+        return False
+    return max(scores) >= settings.rag_kb_score_floor
+
+
+def after_kb_gate(state: RagState) -> str:
+    """本地检索后：hybrid 且不足 → 联网；否则直接合并。"""
     route = (state.get("route") or "kb").lower()
-    if route == "kb":
-        return ["kb_retriever"]
-    if route == "web":
-        return ["web_searcher"]
-    if route == "hybrid":
-        return ["kb_retriever", "web_searcher"]
-    return ["kb_retriever"]
+    if route == "hybrid" and not kb_evidence_sufficient(state):
+        return "web_searcher"
+    return "evidence_merger"
 
 
 async def kb_retriever(state: RagState, *, session: AsyncSession) -> dict[str, Any]:
@@ -189,30 +240,68 @@ async def web_searcher(state: RagState) -> dict[str, Any]:
     return {"web_summary": payload["web_summary"], "web_results": web_results}
 
 
+async def web_extractor_node(state: RagState) -> dict[str, Any]:
+    """对联网搜索 Top-K URL 抽取正文，写回 web_results.content。"""
+    results = list(state.get("web_results") or [])
+    if not results:
+        return {"web_results": []}
+
+    urls = [str(h.get("url") or "") for h in results if h.get("url")]
+    goal = state.get("rewritten_query") or state.get("query")
+    extracts = await extract_urls(urls, goal=goal, top_k=settings.rag_web_extract_top_k)
+    by_url = {e["url"]: e for e in extracts}
+
+    enriched: list[WebHit] = []
+    for hit in results:
+        item = dict(hit)
+        url = str(item.get("url") or "")
+        # 宽松匹配：抽取结果 url 可能带规范化
+        matched = by_url.get(url)
+        if not matched:
+            for k, v in by_url.items():
+                if url and (url in k or k in url):
+                    matched = v
+                    break
+        if matched:
+            item["content"] = matched.get("content") or ""
+            if matched.get("title") and not item.get("title"):
+                item["title"] = matched["title"]
+            if matched.get("site_name") and not item.get("site_name"):
+                item["site_name"] = matched["site_name"]
+        enriched.append(item)  # type: ignore[arg-type]
+    return {"web_results": enriched}
+
+
 def evidence_merger(state: RagState) -> dict[str, Any]:
-    """合并 kb_passages 与 web_results 为统一 citations 列表（带 ordinal）。"""
+    """合并 kb_passages 与 web_results；本地证据序号在前。"""
     citations: list[dict[str, Any]] = []
     ordinal = 1
 
     for raw in state.get("kb_passages") or []:
-        p = RetrievedPassage(**raw)
-        # 保留 retriever 给出的 source（session vs bibliography），便于前端区分
+        p = RetrievedPassage(**{k: v for k, v in raw.items() if k in RetrievedPassage.__dataclass_fields__})
         src = p.source if p.source in {"session", "bibliography", "upload"} else "kb"
-        citations.append({**p.to_citation(ordinal), "source_type": src if src != "upload" else "kb"})
+        cite = p.to_citation(ordinal)
+        cite["source_type"] = src if src != "upload" else "kb"
+        citations.append(cite)
         ordinal += 1
 
     for hit in state.get("web_results") or []:
+        content = str(hit.get("content") or "").strip()
+        snippet = str(hit.get("snippet") or "")
         citations.append(
             {
                 "ordinal": ordinal,
                 "id": f"w-{ordinal}",
                 "title": hit.get("title", ""),
-                "snippet": hit.get("snippet", ""),
-                "highlight_text": hit.get("snippet", ""),
+                "snippet": snippet,
+                "highlight_text": snippet or content[:280],
+                "content": content or None,
                 "source_type": "web",
                 "url": hit.get("url", ""),
                 "icon": hit.get("icon", ""),
                 "site_name": hit.get("site_name", ""),
+                "previewable": bool(content),
+                "preview_mode": "web",
             }
         )
         ordinal += 1
@@ -231,7 +320,12 @@ def _build_evidence_prompt(citations: list[dict[str, Any]]) -> str:
             head += f" path={c['heading_path']}"
         if c.get("era"):
             head += f" era={c['era']}"
-        body = c.get("parent_text") or c.get("highlight_text") or c.get("snippet", "")
+        body = (
+            c.get("content")
+            or c.get("parent_text")
+            or c.get("highlight_text")
+            or c.get("snippet", "")
+        )
         if c.get("url"):
             body += f"\n来源链接: {c['url']}"
         blocks.append(f"{head}\n{body}")
@@ -244,11 +338,7 @@ async def generator_stream(
     thread_id: str,
     message_id: str,
 ) -> AsyncIterator[dict[str, Any]]:
-    """流式生成最终答案，产出 SSE 事件。
-
-    类型：citations_ready、token、reasoning、done、error。
-    引用链接格式见 prompts ANSWER_SYSTEM_TEMPLATE。
-    """
+    """流式生成最终答案，产出 SSE 事件。"""
     citations = state.get("citations") or []
     yield {"type": "citations_ready", "items": citations}
 

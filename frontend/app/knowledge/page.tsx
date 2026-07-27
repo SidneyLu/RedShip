@@ -83,9 +83,14 @@ function KnowledgeView() {
               所有在 <code>bibliography/</code> 中的文献都将按 SHA-256 增量入库，并以混合检索（ANN + BM25）+ 重排提供证据。
             </p>
           </div>
-          <Link href="/" className="btn-ghost">
-            ← 返回对话
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/knowledge/graph" className="btn-outline">
+              知识图谱
+            </Link>
+            <Link href="/" className="btn-ghost">
+              ← 返回对话
+            </Link>
+          </div>
         </div>
         {stats && (
           <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-4">

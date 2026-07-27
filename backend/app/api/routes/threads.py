@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi.responses import Response as RawResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
 from app.api.deps import CurrentUser, DbSession
 from app.db.models import Message, SessionFile, Thread
+from app.export.document import export_document
 from app.knowledge.session_docs import purge_thread_session_resources
 
 router = APIRouter(prefix="/api/threads", tags=["threads"])
@@ -39,6 +42,7 @@ class MessageOut(BaseModel):
     citations: list[dict[str, Any]] | None
     research_events: list[dict[str, Any]] | None
     attachments: list[dict[str, Any]] | None
+    artifacts: list[dict[str, Any]] | None = None
     reasoning: str | None
     created_at: datetime
 
@@ -69,6 +73,7 @@ def _message_out(m: Message) -> MessageOut:
         citations=m.citations,
         research_events=m.research_events,
         attachments=m.attachments,
+        artifacts=getattr(m, "artifacts", None),
         reasoning=m.reasoning,
         created_at=m.created_at,
     )
@@ -142,3 +147,44 @@ async def delete_thread(thread_id: str, user: CurrentUser, session: DbSession) -
     await session.delete(t)
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{thread_id}/messages/{message_id}/export")
+async def export_message(
+    thread_id: str,
+    message_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    format: Literal["md", "docx", "pdf"] = Query(default="md", alias="format"),
+) -> RawResponse:
+    """将助手消息导出为 Markdown / Word / PDF。"""
+    t = (
+        await session.execute(select(Thread).where(Thread.id == thread_id, Thread.user_id == user.id))
+    ).scalar_one_or_none()
+    if not t:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    msg = (
+        await session.execute(
+            select(Message).where(Message.id == message_id, Message.thread_id == thread_id)
+        )
+    ).scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg.role != "assistant":
+        raise HTTPException(status_code=400, detail="Only assistant messages can be exported")
+    content = (msg.content_markdown or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty message content")
+
+    title = t.title or "日新册导出"
+    try:
+        result = export_document(content, format, title=title)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {e}") from e
+
+    disposition = f"attachment; filename*=UTF-8''{quote(result.filename)}"
+    return RawResponse(
+        content=result.content,
+        media_type=result.media_type,
+        headers={"Content-Disposition": disposition},
+    )

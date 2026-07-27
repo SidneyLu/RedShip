@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     research_parallel_subqueries: int = Field(default=4, alias="RESEARCH_PARALLEL_SUBQUERIES")
     research_per_subquery_extracts: int = Field(default=3, alias="RESEARCH_PER_SUBQUERY_EXTRACTS")
 
+    # --- RAG 本地优先门控 + 网页抽取 ---
+    rag_kb_min_hits: int = Field(default=3, alias="RAG_KB_MIN_HITS")
+    rag_kb_score_floor: float = Field(default=0.35, alias="RAG_KB_SCORE_FLOOR")
+    rag_web_extract_top_k: int = Field(default=3, alias="RAG_WEB_EXTRACT_TOP_K")
+
     # --- 文档智能：小文件走 Files API，大文件走会话 Milvus ---
     files_api_inline_max_tokens: int = Field(default=100_000, alias="FILES_API_INLINE_MAX_TOKENS")
     files_api_inline_max_bytes: int = Field(default=8_000_000, alias="FILES_API_INLINE_MAX_BYTES")

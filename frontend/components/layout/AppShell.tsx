@@ -4,7 +4,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { LogOut, BookOpen, Shield, MessageSquareText } from "lucide-react";
+import { LogOut, BookOpen, Shield, MessageSquareText, Network } from "lucide-react";
 import { ReactNode } from "react";
 import { useAuth } from "@/components/providers/AuthProvider";
 import { LoginPanel } from "./LoginPanel";
@@ -60,6 +60,10 @@ export function AppShell({ children, variant = "default" }: Props) {
             <Link href="/knowledge" className="btn-ghost">
               <BookOpen className="h-4 w-4" />
               知识库
+            </Link>
+            <Link href="/knowledge/graph" className="btn-ghost">
+              <Network className="h-4 w-4" />
+              知识图谱
             </Link>
             {user.is_admin && (
               <Link href="/admin" className="btn-ghost">

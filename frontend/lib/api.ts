@@ -102,7 +102,7 @@ export interface Citation {
   highlight_text?: string | null;
   parent_text?: string | null;
   content?: string | null;
-  source_type: "kb" | "web";
+  source_type: "kb" | "web" | "session" | "bibliography" | string;
   url?: string | null;
   site_name?: string | null;
   heading_path?: string | null;
@@ -113,6 +113,8 @@ export interface Citation {
   parent_index?: number | null;
   locator_label?: string | null;
   previewable?: boolean | null;
+  preview_mode?: "text" | "pdf" | "image" | "web" | string | null;
+  media_url?: string | null;
   score?: number | null;
 }
 
@@ -127,6 +129,8 @@ export interface CitationPreviewCard {
   href: string;
   external_url?: string | null;
   previewable: boolean;
+  preview_mode?: "text" | "pdf" | "image" | "web" | null;
+  media_url?: string | null;
 }
 
 export interface CitationPreviewPage {
@@ -143,6 +147,7 @@ export interface CitationPreviewPage {
   page_hint?: number | null;
   external_url?: string | null;
   metadata?: Record<string, unknown> | null;
+  media_url?: string | null;
 }
 
 export function getThreadMessageCitationPreview(
@@ -156,6 +161,21 @@ export function getThreadMessageCitationPreview(
   );
 }
 
+export interface MessageAttachment {
+  id?: string;
+  filename: string;
+  mode?: "files_api" | "session_rag" | string;
+  chunks_count?: number;
+}
+
+export interface MessageArtifact {
+  id: string;
+  title: string;
+  language: "html";
+  code: string;
+  status?: "streaming" | "done";
+}
+
 export interface Message {
   id: string;
   thread_id: string;
@@ -164,7 +184,8 @@ export interface Message {
   content_markdown: string;
   citations: Citation[] | null;
   research_events?: any[] | null;
-  attachments?: any[] | null;
+  attachments?: MessageAttachment[] | null;
+  artifacts?: MessageArtifact[] | null;
   reasoning?: string | null;
   created_at: string;
 }
@@ -197,6 +218,31 @@ export interface KnowledgeStats {
   total_chunks: number;
   by_era: { era: string; count: number }[];
   by_series: { series: string; count: number }[];
+}
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  type: string;
+  size: number;
+  canonical_key?: string | null;
+  metadata?: Record<string, unknown> | null;
+  seed?: boolean | null;
+}
+
+export interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  relation: string;
+  document_id?: string | null;
+  weight?: number;
+  evidence?: string | null;
+}
+
+export interface GraphPayload {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
 }
 
 export interface SessionFileItem {

@@ -3,7 +3,7 @@
  */
 
 import type { UIMessage } from "ai";
-import type { Citation, Message } from "@/lib/api";
+import type { Citation, Message, MessageArtifact, MessageAttachment } from "@/lib/api";
 
 /** research_step payload (stream data part + ResearchProgress). */
 export interface ResearchStep {
@@ -29,6 +29,15 @@ export interface ResearchStep {
 export type RedShipMessageMetadata = {
   threadId?: string;
   mode?: "chat" | "research";
+  attachments?: MessageAttachment[];
+};
+
+export type ArtifactPart = {
+  id: string;
+  title: string;
+  language: "html";
+  code: string;
+  status: "streaming" | "done";
 };
 
 export type RedShipDataParts = {
@@ -46,6 +55,7 @@ export type RedShipDataParts = {
   };
   "research-step": ResearchStep;
   citations: { items: Citation[] };
+  artifact: ArtifactPart;
 };
 
 export type RedShipUIMessage = UIMessage<RedShipMessageMetadata, RedShipDataParts>;
@@ -87,6 +97,38 @@ export function getResearchStepsFromMessages(messages: RedShipUIMessage[]): Rese
   return steps;
 }
 
+export function getMessageAttachments(message: RedShipUIMessage): MessageAttachment[] {
+  const fromMeta = message.metadata?.attachments;
+  if (Array.isArray(fromMeta) && fromMeta.length > 0) return fromMeta;
+  return [];
+}
+
+export function getMessageArtifacts(message: RedShipUIMessage): ArtifactPart[] {
+  const byId = new Map<string, ArtifactPart>();
+  for (const part of message.parts) {
+    if (part.type === "data-artifact" && part.data?.id) {
+      byId.set(part.data.id, {
+        id: part.data.id,
+        title: part.data.title || "可视化",
+        language: "html",
+        code: part.data.code || "",
+        status: part.data.status === "streaming" ? "streaming" : "done",
+      });
+    }
+  }
+  return Array.from(byId.values());
+}
+
+export function getArtifactsFromMessages(messages: RedShipUIMessage[]): ArtifactPart[] {
+  const byId = new Map<string, ArtifactPart>();
+  for (const message of messages) {
+    for (const a of getMessageArtifacts(message)) {
+      byId.set(a.id, a);
+    }
+  }
+  return Array.from(byId.values());
+}
+
 export function messageMode(message: RedShipUIMessage): "chat" | "research" {
   return message.metadata?.mode === "research" ? "research" : "chat";
 }
@@ -94,6 +136,9 @@ export function messageMode(message: RedShipUIMessage): "chat" | "research" {
 /** Map a Postgres Message row to a UIMessage for useChat hydration. */
 export function dbMessageToUIMessage(m: Message): RedShipUIMessage {
   const parts: RedShipUIMessage["parts"] = [];
+  const attachments = Array.isArray(m.attachments)
+    ? (m.attachments as MessageAttachment[])
+    : undefined;
 
   if (m.role === "assistant" && m.reasoning) {
     parts.push({ type: "reasoning", text: m.reasoning, state: "done" });
@@ -133,12 +178,30 @@ export function dbMessageToUIMessage(m: Message): RedShipUIMessage {
     });
   }
 
+  if (m.role === "assistant" && Array.isArray(m.artifacts)) {
+    (m.artifacts as MessageArtifact[]).forEach((a) => {
+      if (!a?.id || !a.code) return;
+      parts.push({
+        type: "data-artifact",
+        id: a.id,
+        data: {
+          id: a.id,
+          title: a.title || "可视化",
+          language: "html",
+          code: a.code,
+          status: "done",
+        },
+      });
+    });
+  }
+
   return {
     id: m.id,
     role: m.role === "system" ? "system" : m.role,
     metadata: {
       threadId: m.thread_id,
       mode: m.mode,
+      attachments,
     },
     parts,
   };

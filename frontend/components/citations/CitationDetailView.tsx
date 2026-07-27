@@ -1,9 +1,10 @@
 "use client";
 
-/** 引用详情页主体：展示命中摘录、父块上下文与来源元数据。 */
+/** 引用详情页主体：展示命中摘录、父块/网页正文、图片预览与来源元数据。 */
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Citation, CitationPreviewPage } from "@/lib/api";
+import { getApiBase, getToken } from "@/lib/api";
 
 interface Props {
   citation?: Citation | null;
@@ -41,6 +42,45 @@ function metadataRows(preview: CitationPreviewPage | null | undefined, citation:
   return Object.entries(raw || {}).filter(([, value]) => value !== null && value !== undefined && value !== "");
 }
 
+function modeLabel(mode: string | null | undefined, sourceType: string): string {
+  if (mode === "web" || sourceType === "web") return "网页阅读器";
+  if (mode === "image") return "图片资料";
+  return "文本资料";
+}
+
+function AuthImage({ src, alt }: { src: string; alt: string }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let revoked: string | null = null;
+    let cancelled = false;
+    const url = src.startsWith("http") ? src : `${getApiBase()}${src}`;
+    fetch(url, { headers: { Authorization: `Bearer ${getToken() || ""}` } })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      })
+      .then((b) => {
+        if (cancelled) return;
+        revoked = URL.createObjectURL(b);
+        setBlobUrl(revoked);
+      })
+      .catch(() => {
+        if (!cancelled) setBlobUrl(null);
+      });
+    return () => {
+      cancelled = true;
+      if (revoked) URL.revokeObjectURL(revoked);
+    };
+  }, [src]);
+  if (!blobUrl) {
+    return <div className="rounded-xl border border-border bg-canvas/60 px-4 py-8 text-center text-sm text-muted">图片加载中…</div>;
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={blobUrl} alt={alt} className="max-h-[420px] w-full rounded-xl object-contain bg-canvas" />
+  );
+}
+
 export function CitationDetailView({ citation, preview }: Props) {
   const sourceType = citation?.source_type || (preview?.preview_mode === "web" ? "web" : "kb");
   const title = preview?.title || citation?.title || citation?.heading_path || "引用详情";
@@ -55,7 +95,13 @@ export function CitationDetailView({ citation, preview }: Props) {
   const highlight = preview?.highlight_text || citation?.highlight_text || citation?.snippet;
   const excerpt = preview?.excerpt || citation?.snippet || citation?.highlight_text || "";
   const externalUrl = preview?.external_url || citation?.url;
+  const previewMode = preview?.preview_mode || citation?.preview_mode || (sourceType === "web" ? "web" : "text");
+  const mediaUrl =
+    preview?.media_url ||
+    citation?.media_url ||
+    (typeof preview?.metadata?.media_url === "string" ? preview.metadata.media_url : null);
   const rows = metadataRows(preview, citation);
+  const isWeb = sourceType === "web" || previewMode === "web";
 
   return (
     <article className="space-y-4">
@@ -63,7 +109,7 @@ export function CitationDetailView({ citation, preview }: Props) {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-xs uppercase tracking-widest text-muted">
-              {sourceType === "web" ? "网络来源" : "知识库文档"}
+              {isWeb ? "网络来源" : previewMode === "image" ? "图片文献" : "知识库文档"}
             </div>
             <h2 className="mt-1 text-2xl font-semibold text-crimson-800">{title}</h2>
             {preview?.subtitle && <div className="mt-1 text-sm text-muted">{preview.subtitle}</div>}
@@ -80,12 +126,10 @@ export function CitationDetailView({ citation, preview }: Props) {
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted">
-          {preview?.preview_mode && (
-            <span className="rounded-full border border-border bg-canvas px-3 py-1">
-              {preview.preview_mode === "web" ? "网页引用" : "文本资料"}
-              {preview.page_hint ? ` · 第 ${preview.page_hint} 块` : ""}
-            </span>
-          )}
+          <span className="rounded-full border border-border bg-canvas px-3 py-1">
+            {modeLabel(previewMode, sourceType)}
+            {preview?.page_hint ? ` · 第 ${preview.page_hint} 块` : ""}
+          </span>
           {typeof preview?.trust_score === "number" && (
             <span className="rounded-full border border-crimson-200 bg-crimson-50 px-3 py-1 text-crimson-700">
               可信度 {preview.trust_score.toFixed(2)}
@@ -102,6 +146,15 @@ export function CitationDetailView({ citation, preview }: Props) {
               {highlightContent(excerpt || highlight || "暂无摘录。", highlight)}
             </div>
           </article>
+
+          {previewMode === "image" && mediaUrl ? (
+            <article className="panel p-4">
+              <p className="text-xs font-semibold uppercase tracking-widest text-crimson-700">原图预览</p>
+              <div className="mt-3">
+                <AuthImage src={mediaUrl} alt={title} />
+              </div>
+            </article>
+          ) : null}
 
           {rows.length > 0 && (
             <article className="panel p-4">
@@ -126,7 +179,7 @@ export function CitationDetailView({ citation, preview }: Props) {
                 target="_blank"
                 rel="noreferrer noopener"
               >
-                打开原始链接
+                打开原文
               </a>
             </article>
           )}
@@ -134,12 +187,30 @@ export function CitationDetailView({ citation, preview }: Props) {
 
         <article className="panel overflow-hidden">
           <div className="border-b border-border px-5 py-4">
-            <p className="text-xs font-semibold uppercase tracking-widest text-crimson-700">上下文正文</p>
-            <p className="mt-2 text-sm text-muted">展示当前引用命中的父块上下文，用于回到原文附近核对。</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-crimson-700">
+              {isWeb ? "网页正文（抽取）" : "上下文正文"}
+            </p>
+            <p className="mt-2 text-sm text-muted">
+              {isWeb
+                ? "展示联网抓取的清洗正文，便于核对事实；完整页面请打开原文。"
+                : "展示当前引用命中的父块上下文，用于回到原文附近核对。"}
+            </p>
           </div>
           <div className="max-h-[72vh] overflow-y-auto whitespace-pre-wrap px-5 py-4 text-sm leading-8 text-ink scroll-pretty">
             {body ? highlightContent(body, highlight) : "当前引用暂无更完整的上下文内容。"}
           </div>
+          {isWeb && externalUrl ? (
+            <div className="border-t border-border px-5 py-3">
+              <a
+                className="text-sm font-medium text-crimson-700 underline-offset-2 hover:underline"
+                href={externalUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                打开原文 →
+              </a>
+            </div>
+          ) : null}
         </article>
       </section>
     </article>

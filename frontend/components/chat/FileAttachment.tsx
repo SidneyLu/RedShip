@@ -1,39 +1,54 @@
 "use client";
 
-/** 会话附件列表与上传状态展示。 */
+/** 会话附件上传入口；列表详情由 SessionDocsPanel 展示。 */
 
-import { useEffect, useState, useRef } from "react";
-import { Paperclip, FileText, Image as ImageIcon, X, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Paperclip, Loader2, Files } from "lucide-react";
 import { api, getApiBase, getToken, type SessionFileItem } from "@/lib/api";
 import { useToast } from "@/components/providers/ToastProvider";
 
-const IMAGE_EXT = /\.(png|jpe?g|webp)$/i;
-
 interface Props {
   threadId: string | null;
+  /** 受控列表；传入后以内源为准 */
+  files?: SessionFileItem[];
   onChange?: (files: SessionFileItem[]) => void;
   onEnsureThread?: () => Promise<string | null>;
+  /** 已有附件时点击打开分析面板 */
+  onOpenPanel?: () => void;
 }
 
-export function FileAttachment({ threadId, onChange, onEnsureThread }: Props) {
-  const [files, setFiles] = useState<SessionFileItem[]>([]);
+export function FileAttachment({
+  threadId,
+  files: controlledFiles,
+  onChange,
+  onEnsureThread,
+  onOpenPanel,
+}: Props) {
+  const [localFiles, setLocalFiles] = useState<SessionFileItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const { show } = useToast();
+  const files = controlledFiles ?? localFiles;
 
   useEffect(() => {
+    if (controlledFiles !== undefined) return;
     if (!threadId) {
-      setFiles([]);
+      setLocalFiles([]);
       onChange?.([]);
       return;
     }
     api<SessionFileItem[]>(`/api/threads/${threadId}/files`)
       .then((r) => {
-        setFiles(r);
+        setLocalFiles(r);
         onChange?.(r);
       })
       .catch(() => {});
-  }, [threadId, onChange]);
+  }, [threadId, onChange, controlledFiles]);
+
+  const setFiles = (next: SessionFileItem[]) => {
+    if (controlledFiles === undefined) setLocalFiles(next);
+    onChange?.(next);
+  };
 
   const upload = async (file: File) => {
     let activeThreadId = threadId;
@@ -58,27 +73,20 @@ export function FileAttachment({ threadId, onChange, onEnsureThread }: Props) {
         throw new Error(err);
       }
       const item: SessionFileItem = await resp.json();
-      const next = [item, ...files];
-      setFiles(next);
-      onChange?.(next);
-      show({ title: "文件已加载", description: `${item.filename}（${item.mode}）`, variant: "success" });
-    } catch (e: any) {
-      show({ title: "上传失败", description: String(e?.message || e), variant: "destructive" });
+      setFiles([item, ...files]);
+      onOpenPanel?.();
+      const modeHint = item.mode === "files_api" ? "Files API 全文注入" : "会话 RAG 分块索引";
+      show({
+        title: "文件已就绪",
+        description: `${item.filename} · ${modeHint}`,
+        variant: "success",
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      show({ title: "上传失败", description: msg, variant: "destructive" });
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
-    }
-  };
-
-  const remove = async (id: string) => {
-    if (!threadId) return;
-    try {
-      await api(`/api/threads/${threadId}/files/${id}`, { method: "DELETE" });
-      const next = files.filter((f) => f.id !== id);
-      setFiles(next);
-      onChange?.(next);
-    } catch (e: any) {
-      show({ title: "删除失败", description: String(e?.message || e), variant: "destructive" });
     }
   };
 
@@ -101,28 +109,22 @@ export function FileAttachment({ threadId, onChange, onEnsureThread }: Props) {
         {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
         添加文件
       </button>
-      {files.map((f) => (
-        <div key={f.id} className="chip group relative max-w-[18rem]">
-          {IMAGE_EXT.test(f.filename) ? (
-            <ImageIcon className="h-3.5 w-3.5" />
-          ) : (
-            <FileText className="h-3.5 w-3.5" />
-          )}
-          <span className="truncate" title={f.filename}>
-            {f.filename}
-          </span>
-          <span className="ml-1 text-[10px] uppercase tracking-wider text-crimson-700/80">
-            {f.mode === "files_api" ? "Files API" : "会话RAG"}
-          </span>
-          <button
-            type="button"
-            onClick={() => remove(f.id)}
-            className="ml-1 rounded-full p-0.5 hover:bg-crimson-100"
-          >
-            <X className="h-3 w-3" />
-          </button>
-        </div>
-      ))}
+      {files.length > 0 ? (
+        <button
+          type="button"
+          onClick={() => onOpenPanel?.()}
+          className="chip hover:border-crimson-200"
+          title="查看本会话文档分析"
+        >
+          <Files className="h-3.5 w-3.5" />
+          已附 {files.length} 个文档
+        </button>
+      ) : null}
     </div>
   );
+}
+
+/** 供父组件删除附件时复用 API */
+export async function removeSessionFile(threadId: string, fileId: string): Promise<void> {
+  await api(`/api/threads/${threadId}/files/${fileId}`, { method: "DELETE" });
 }

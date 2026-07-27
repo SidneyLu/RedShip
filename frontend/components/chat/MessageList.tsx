@@ -1,20 +1,23 @@
 "use client";
 
-/** 消息气泡列表；按 UIMessage parts 渲染 text / reasoning / citations。 */
+/** 消息气泡列表；按 UIMessage parts 渲染 text / reasoning / citations / attachments。 */
 
 import { useEffect, useRef, useState } from "react";
 import type { ChatStatus } from "ai";
-import { Bot, User as UserIcon, BookOpen, ChevronDown, Sparkles, X } from "lucide-react";
+import { Bot, User as UserIcon, BookOpen, ChevronDown, Sparkles, X, FileText, LayoutDashboard } from "lucide-react";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { MessageActions } from "./MessageActions";
 import { CitationPreviewProvider } from "@/components/citations/CitationPreviewProvider";
 import { CitationChip } from "@/components/citations/CitationChip";
 import { cn } from "@/lib/utils";
 import type { Citation } from "@/lib/api";
 import {
+  getMessageAttachments,
+  getMessageArtifacts,
   getMessageCitations,
   getMessageReasoning,
   getMessageText,
-  messageMode,
+  type ArtifactPart,
   type RedShipUIMessage,
 } from "@/lib/chat-types";
 
@@ -24,8 +27,10 @@ interface Props {
   error?: Error | undefined;
   /** Fallback when message.metadata.mode is missing (e.g. mid-stream assistant). */
   mode?: "chat" | "research";
+  threadId?: string | null;
   onCitationClick?: (citation: Citation, message: RedShipUIMessage) => void;
   onDismissError?: () => void;
+  onOpenArtifact?: (artifact: ArtifactPart) => void;
 }
 
 export function MessageList({
@@ -33,8 +38,10 @@ export function MessageList({
   status,
   error,
   mode = "chat",
+  threadId,
   onCitationClick,
   onDismissError,
+  onOpenArtifact,
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const isStreaming = status === "streaming" || status === "submitted";
@@ -65,7 +72,9 @@ export function MessageList({
               message={m}
               modeFallback={mode}
               typing={Boolean(showInlineTyping)}
+              threadId={threadId}
               onCitationClick={(c) => onCitationClick?.(c, m)}
+              onOpenArtifact={onOpenArtifact}
             />
           );
         })}
@@ -117,22 +126,58 @@ function TypingDots() {
   );
 }
 
+function AttachmentStrip({
+  attachments,
+  inverted,
+}: {
+  attachments: ReturnType<typeof getMessageAttachments>;
+  inverted?: boolean;
+}) {
+  if (!attachments.length) return null;
+  return (
+    <div className={cn("mb-2 flex flex-wrap gap-1.5", inverted && "opacity-95")}>
+      {attachments.map((a, i) => (
+        <span
+          key={a.id || `${a.filename}-${i}`}
+          className={cn(
+            "inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[10px]",
+            inverted
+              ? "bg-white/15 text-white"
+              : "border border-border bg-canvas/60 text-muted"
+          )}
+          title={a.mode === "files_api" ? "Files API" : a.mode === "session_rag" ? "会话 RAG" : undefined}
+        >
+          <FileText className="h-3 w-3 shrink-0" />
+          <span className="truncate">{a.filename}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function MessageBubble({
   message,
   modeFallback = "chat",
   typing,
+  threadId,
   onCitationClick,
+  onOpenArtifact,
 }: {
   message: RedShipUIMessage;
   modeFallback?: "chat" | "research";
   typing?: boolean;
+  threadId?: string | null;
   onCitationClick?: (c: Citation) => void;
+  onOpenArtifact?: (artifact: ArtifactPart) => void;
 }) {
   const isUser = message.role === "user";
   const isResearch = (message.metadata?.mode || modeFallback) === "research" && !isUser;
   const text = getMessageText(message);
   const reasoning = getMessageReasoning(message);
   const citations = getMessageCitations(message);
+  const attachments = getMessageAttachments(message);
+  const artifacts = getMessageArtifacts(message);
+  const tid = threadId || message.metadata?.threadId;
 
   return (
     <article className={cn("flex w-full gap-3", isUser ? "justify-end" : "justify-start")}>
@@ -157,6 +202,7 @@ function MessageBubble({
             深度研究报告
           </div>
         )}
+        <AttachmentStrip attachments={attachments} inverted={isUser} />
         {isUser ? (
           <p className="whitespace-pre-wrap leading-7">{text}</p>
         ) : (
@@ -165,7 +211,27 @@ function MessageBubble({
             {typing && !text ? (
               <TypingDots />
             ) : text ? (
-              <MarkdownMessage content={text} citations={citations} onCitationClick={onCitationClick} />
+              <MarkdownMessage
+                content={text}
+                citations={citations}
+                onCitationClick={onCitationClick}
+                onOpenArtifact={onOpenArtifact}
+              />
+            ) : null}
+            {artifacts.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {artifacts.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => onOpenArtifact?.(a)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-crimson-200 bg-crimson-50 px-2 py-1 text-[11px] text-crimson-800 hover:bg-crimson-100"
+                  >
+                    <LayoutDashboard className="h-3 w-3" />
+                    打开画布：{a.title}
+                  </button>
+                ))}
+              </div>
             ) : null}
             {citations.length > 0 ? (
               <div className="flex flex-wrap gap-1.5 border-t border-border/60 pt-2">
@@ -179,6 +245,14 @@ function MessageBubble({
                   />
                 ))}
               </div>
+            ) : null}
+            {tid && text ? (
+              <MessageActions
+                threadId={tid}
+                messageId={message.id}
+                text={text}
+                emphasizeExport={isResearch}
+              />
             ) : null}
           </div>
         )}

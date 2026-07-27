@@ -13,6 +13,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -138,6 +139,7 @@ class Message(Base, TimestampMixin):
     citations: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     research_events: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     attachments: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    artifacts: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     extra_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     thread: Mapped[Thread] = relationship(back_populates="messages")
@@ -183,6 +185,68 @@ class UserMemory(Base, TimestampMixin):
     extra_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (Index("ix_user_memories_user_created", "user_id", "created_at"),)
+
+
+class KgEntity(Base, TimestampMixin):
+    """知识图谱实体：文献结构节点 + 抽取的人物/机构/事件。"""
+
+    __tablename__ = "kg_entities"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    type: Mapped[str] = mapped_column(
+        String(32), nullable=False, index=True
+    )  # person|organization|event|era|series|document|section
+    canonical_key: Mapped[str] = mapped_column(String(640), nullable=False, unique=True, index=True)
+    doc_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    extra_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    edges_out: Mapped[list["KgEdge"]] = relationship(
+        back_populates="src",
+        foreign_keys="KgEdge.src_entity_id",
+        cascade="all, delete-orphan",
+    )
+    edges_in: Mapped[list["KgEdge"]] = relationship(
+        back_populates="dst",
+        foreign_keys="KgEdge.dst_entity_id",
+        cascade="all, delete-orphan",
+    )
+
+
+class KgEdge(Base, TimestampMixin):
+    """知识图谱边：结构关系或抽取的实体关系。"""
+
+    __tablename__ = "kg_edges"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    src_entity_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("kg_entities.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dst_entity_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("kg_entities.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    relation: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    document_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("documents.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    chunk_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    weight: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extra_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    src: Mapped[KgEntity] = relationship(back_populates="edges_out", foreign_keys=[src_entity_id])
+    dst: Mapped[KgEntity] = relationship(back_populates="edges_in", foreign_keys=[dst_entity_id])
+
+    __table_args__ = (
+        UniqueConstraint(
+            "src_entity_id",
+            "dst_entity_id",
+            "relation",
+            "document_id",
+            name="uq_kg_edge_src_dst_rel_doc",
+        ),
+        Index("ix_kg_edges_src_dst", "src_entity_id", "dst_entity_id"),
+    )
 
 
 class AuditLog(Base):

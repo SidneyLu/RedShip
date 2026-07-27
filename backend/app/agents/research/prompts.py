@@ -40,4 +40,21 @@ WRITER_SYSTEM = """你是党史研究报告撰写者。请基于提供的研究�
 4. 严禁伪造数据或人名；若证据不足，请如实说明。
 5. 报告语气保持中立、学术，避免感情色彩。
 6. 长度建议 1200–2200 字。
+7. 若证据适合可视化（时间线、人物关系、阶段对比、数量统计等），在「核心发现」相关节落后追加 **一个** 自包含 HTML 可视化围栏（最多 1 个），格式如下：
+```artifact-html
+<!-- title: 简短中文标题 -->
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"/>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>body{{margin:0;font-family:sans-serif}}#c{{width:100%;height:420px}}</style>
+</head><body><div id="c"></div>
+<script>
+/* 仅使用证据中的真实数据；禁止伪造 */
+var chart = echarts.init(document.getElementById('c'));
+chart.setOption({{ /* option */ }});
+</script></body></html>
+```
+   - 必须是完整可运行的 HTML；可用 CDN 引入 ECharts；不要引用本站 cookie / localStorage。
+   - 无合适可视化时不要输出该围栏。
+8. 报告正文保持清晰标题层级，便于导出为 Word / PDF。
 """

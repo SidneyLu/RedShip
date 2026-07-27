@@ -14,6 +14,7 @@ from app.knowledge.ingestion.watcher import (
     stream_sync_bibliography,
     sync_bibliography,
 )
+from app.knowledge.kg_extract import rebuild_knowledge_graph
 from app.core.audit import write_audit
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -79,3 +80,28 @@ async def sync_stream(admin: AdminUser):
                 yield {"event": "message", "data": json.dumps(ev, ensure_ascii=False)}
 
     return EventSourceResponse(event_gen(), media_type="text/event-stream", ping=15)
+
+
+@router.post("/knowledge/graph/rebuild")
+async def rebuild_graph(
+    admin: AdminUser,
+    session: DbSession,
+    extract_entities: bool = True,
+    limit: int | None = None,
+):
+    """重建知识图谱（不重 embed）；可选限制文档数。"""
+    summary = await rebuild_knowledge_graph(
+        session, extract_entities=extract_entities, limit=limit
+    )
+    await write_audit(
+        session,
+        user_id=admin.id,
+        action="knowledge.graph.rebuild",
+        details={
+            "documents": summary.get("documents"),
+            "ok": summary.get("ok"),
+            "failed": summary.get("failed"),
+        },
+    )
+    await session.commit()
+    return summary

@@ -1,23 +1,22 @@
-"""Pipeline RAG（快速问答）LangGraph 状态 TypedDict。
-
-各字段由 nodes 写入、graph.run_rag_stream 合并后供 generator_stream 使用。
-"""
+"""Pipeline RAG（快速问答）LangGraph 状态 TypedDict。"""
 from __future__ import annotations
 
 from typing import Any, TypedDict
 
 
 class WebHit(TypedDict, total=False):
-    """联网搜索单条结果元数据。"""
+    """联网搜索单条结果元数据（可含抽取正文 content）。"""
+
     title: str
     url: str
     snippet: str
     icon: str
     site_name: str
+    content: str
 
 
 class RagState(TypedDict, total=False):
-    """图状态；route 决定 kb_retriever / web_searcher 并行分支。"""
+    """图状态；本地检索优先，不足时再联网抽取。"""
 
     thread_id: str
     user_id: str
@@ -28,7 +27,7 @@ class RagState(TypedDict, total=False):
 
     rewritten_query: str
     entities: dict[str, Any]
-    route: str  # kb | web | hybrid | files
+    route: str  # kb | web | hybrid
 
     kb_passages: list[dict[str, Any]]
     web_results: list[WebHit]

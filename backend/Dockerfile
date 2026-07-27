@@ -11,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# MinerU pipeline（CPU）系统依赖
+# MinerU pipeline（CPU）系统依赖 + WeasyPrint PDF 导出
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
@@ -21,6 +21,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
         libgomp1 \
         poppler-utils \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libgdk-pixbuf-2.0-0 \
+        libffi-dev \
+        shared-mime-info \
+        fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt

@@ -1,7 +1,7 @@
 """SSE 流式聊天：快速问答（chat）与深度研究（research）。
 
 AI SDK UI Message Stream（x-vercel-ai-ui-message-stream: v1）：
-  start / data-ack / data-stage / data-research-step / data-citations
+  start / data-ack / data-stage / data-research-step / data-artifact / data-citations
   text-start|delta|end · reasoning-start|delta|end · finish · [DONE]
 内部 LangGraph 仍产出 dict 事件，在本路由边界经 UIMessageStreamEncoder 翻译。
 """
@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from app.agents.rag.graph import run_rag_stream
 from app.agents.research.graph import run_research_stream
+from app.agents.research.artifact_parser import extract_artifacts_from_markdown
 from app.api.deps import CurrentUser, DbSession
 from app.api.streaming.ui_message import (
     UIMessageStreamEncoder,
@@ -116,6 +117,10 @@ async def chat(payload: ChatRequest, user: CurrentUser, session: DbSession):
             }
         )
 
+    if attachments_meta:
+        user_msg.attachments = attachments_meta
+        await session.commit()
+
     user_id = user.id
     thread_id = thread.id
     assistant_message_id = str(uuid.uuid4())
@@ -187,6 +192,11 @@ async def chat(payload: ChatRequest, user: CurrentUser, session: DbSession):
                             yield line
 
                 content_markdown = "".join(tokens).strip()
+                artifacts = (
+                    extract_artifacts_from_markdown(content_markdown)
+                    if mode == "research"
+                    else []
+                )
                 async with factory() as save_session:
                     assistant_msg = Message(
                         id=assistant_message_id,
@@ -198,6 +208,7 @@ async def chat(payload: ChatRequest, user: CurrentUser, session: DbSession):
                         research_events=research_events or None,
                         reasoning="".join(reasoning) or None,
                         attachments=attachments_meta or None,
+                        artifacts=artifacts or None,
                     )
                     save_session.add(assistant_msg)
                     th = (

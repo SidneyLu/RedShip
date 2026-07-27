@@ -140,6 +140,35 @@ function AdminInner() {
         >
           全量重建
         </button>
+        <button
+          type="button"
+          className="btn-outline"
+          disabled={running}
+          onClick={async () => {
+            setRunning(true);
+            try {
+              const summary = await api<{ documents?: number; ok?: number; failed?: number }>(
+                "/api/admin/knowledge/graph/rebuild",
+                { method: "POST" }
+              );
+              show({
+                title: "图谱重建完成",
+                description: `文档 ${summary.documents ?? "—"} · 成功 ${summary.ok ?? "—"} · 失败 ${summary.failed ?? 0}`,
+                variant: "success",
+              });
+              refresh();
+            } catch (e: any) {
+              show({ title: "图谱重建失败", description: String(e.message), variant: "destructive" });
+            } finally {
+              setRunning(false);
+            }
+          }}
+        >
+          重建图谱
+        </button>
+        <Link href="/knowledge/graph" className="btn-ghost">
+          查看图谱
+        </Link>
         </div>
       </header>
 

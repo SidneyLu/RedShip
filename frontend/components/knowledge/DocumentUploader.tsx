@@ -47,7 +47,7 @@ export function DocumentUploader({ onUploaded, disabled }: Props) {
         ref={fileRef}
         type="file"
         className="hidden"
-        accept=".md,.markdown,.txt,.pdf,.docx"
+        accept=".md,.markdown,.txt,.pdf,.docx,.png,.jpg,.jpeg,.webp"
         onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
       />
       <button
@@ -59,7 +59,7 @@ export function DocumentUploader({ onUploaded, disabled }: Props) {
         {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
         上传知识库文档
       </button>
-      <p className="text-xs text-muted">支持 PDF / MD / DOCX / TXT，仅管理员可用。</p>
+      <p className="text-xs text-muted">支持 PDF / MD / DOCX / TXT / 图片，仅管理员可用。</p>
     </div>
   );
 }

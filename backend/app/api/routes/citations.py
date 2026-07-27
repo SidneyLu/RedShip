@@ -33,6 +33,9 @@ class CitationOut(BaseModel):
     parent_index: int | None = None
     locator_label: str | None = None
     previewable: bool | None = None
+    preview_mode: str | None = None
+    media_url: str | None = None
+    score: float | None = None
 
 
 class CitationPreviewCard(BaseModel):
@@ -46,6 +49,8 @@ class CitationPreviewCard(BaseModel):
     href: str
     external_url: str | None = None
     previewable: bool
+    preview_mode: Literal["text", "pdf", "image", "web"] | None = None
+    media_url: str | None = None
 
 
 class CitationPreviewPage(BaseModel):
@@ -62,6 +67,7 @@ class CitationPreviewPage(BaseModel):
     page_hint: int | None = None
     external_url: str | None = None
     metadata: dict[str, Any] | None = None
+    media_url: str | None = None
 
 
 def _to_out(c: dict[str, Any]) -> CitationOut:
@@ -84,6 +90,9 @@ def _to_out(c: dict[str, Any]) -> CitationOut:
         parent_index=_int_or_none(c.get("parent_index")),
         locator_label=c.get("locator_label"),
         previewable=bool(c.get("previewable")) if c.get("previewable") is not None else None,
+        preview_mode=c.get("preview_mode"),
+        media_url=c.get("media_url"),
+        score=_score_or_none(c.get("score")),
     )
 
 
@@ -186,7 +195,8 @@ def _preview_payload(
     parent: KnowledgeChunk | None,
 ) -> dict[str, Any]:
     citation_id = str(c.get("id") or c.get("ordinal"))
-    is_web = str(c.get("source_type") or "kb") == "web"
+    source_type = str(c.get("source_type") or "kb")
+    is_web = source_type == "web"
     title = str(c.get("title") or (doc.title if doc else "") or c.get("site_name") or "引用详情")
     heading_path = c.get("heading_path") or (parent.heading_path if parent else None)
     relative_path = c.get("relative_path") or (doc.relative_path if doc else None)
@@ -198,6 +208,30 @@ def _preview_payload(
     if parent_index is None and parent is not None:
         parent_index = parent.parent_index
 
+    preview_mode = str(c.get("preview_mode") or "")
+    media_url = c.get("media_url")
+    if not preview_mode:
+        if is_web:
+            preview_mode = "web"
+        elif doc and isinstance(doc.extra_metadata, dict) and doc.extra_metadata.get("media_type") == "image":
+            preview_mode = "image"
+            media_url = media_url or f"/api/knowledge/documents/{doc.id}/media"
+        else:
+            preview_mode = "text"
+
+    if preview_mode == "image" and not media_url and doc:
+        media_url = f"/api/knowledge/documents/{doc.id}/media"
+
+    # web：有正文可预览；image：始终可预览；其余默认非 web
+    if c.get("previewable") is not None:
+        previewable = bool(c.get("previewable"))
+    elif preview_mode == "image":
+        previewable = True
+    elif is_web:
+        previewable = bool(content)
+    else:
+        previewable = True
+
     metadata = {
         "doc_id": c.get("doc_id"),
         "relative_path": relative_path,
@@ -205,7 +239,9 @@ def _preview_payload(
         "era": c.get("era") or (parent.era if parent else None) or (doc.era if doc else None),
         "series": c.get("series") or (doc.series if doc else None),
         "parent_index": parent_index,
-        "source_type": c.get("source_type") or "kb",
+        "source_type": source_type,
+        "media_url": media_url,
+        "preview_mode": preview_mode,
     }
     metadata = {k: v for k, v in metadata.items() if v not in (None, "")}
 
@@ -221,10 +257,11 @@ def _preview_payload(
         "trust_score": _trust_score(c),
         "href": f"/threads/{thread_id}/messages/{message_id}/citations/{citation_id}",
         "external_url": c.get("url"),
-        "previewable": bool(c.get("previewable", not is_web)),
-        "preview_mode": "web" if is_web else "text",
+        "previewable": previewable,
+        "preview_mode": preview_mode,
         "page_hint": parent_index + 1 if parent_index is not None else None,
         "metadata": metadata,
+        "media_url": media_url,
     }
 
 

@@ -43,6 +43,11 @@ jieba==0.42.1
 # --- Markdown / document parsing (MinerU — PDF/DOCX; MD/TXT direct read) ---
 mineru>=3.1.0
 
+# --- Document export ---
+python-docx==1.1.2
+markdown==3.7
+weasyprint==63.1
+
 # --- Utility ---
 python-dotenv==1.0.1
 orjson==3.10.13

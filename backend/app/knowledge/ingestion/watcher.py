@@ -27,7 +27,12 @@ from app.knowledge.indexer import (
     upsert_chunks,
 )
 from app.knowledge.ingestion.chunker import chunk_document, ParentChunk
-from app.knowledge.ingestion.parser import parse_document, iter_bibliography
+from app.knowledge.ingestion.parser import (
+    IMAGE_EXTENSIONS,
+    iter_bibliography,
+    parse_document,
+    parse_image_document,
+)
 from app.llm.dashscope import dashscope_client
 
 MAX_PARENT_CHUNKS_PER_DOCUMENT = 24
@@ -178,7 +183,19 @@ async def _ingest_one(
                 return "skipped"
             raise
 
-    parsed = parse_document(path)
+    is_image = path.suffix.lower() in IMAGE_EXTENSIONS
+    try:
+        if is_image:
+            parsed = await parse_image_document(path)
+        else:
+            parsed = parse_document(path)
+    except Exception as e:
+        doc.status = "failed"
+        doc.error = str(e)[:500]
+        await session.commit()
+        logger.exception("Parse failed for {}: {}", rel, e)
+        return "failed"
+
     parents: list[ParentChunk] = chunk_document(parsed)
     sampled_count = len(parents)
     parents = _sample_parent_chunks(parents)
@@ -237,7 +254,33 @@ async def _ingest_one(
         )
 
     doc.chunks_count = len(parents)
+    doc.file_path = str(path)
+    doc.mime_type = path.suffix.lstrip(".").lower()
+    doc.size_bytes = path.stat().st_size
+    meta = dict(doc.extra_metadata or {})
+    if is_image:
+        meta.update(
+            {
+                "media_type": "image",
+                "image_path": str(path),
+                "parser": "vision",
+            }
+        )
+    elif parsed.metadata:
+        meta.update({k: v for k, v in parsed.metadata.items() if k not in meta})
+    doc.extra_metadata = meta or None
     doc.status = "indexed"
+    await session.flush()
+
+    # 知识图谱：结构边 + 实体抽取（失败不阻断入库）
+    try:
+        from app.knowledge.kg_extract import build_document_graph
+
+        kg_stats = await build_document_graph(session, doc, parents, extract_entities=True)
+        logger.info("KG built for {}: {}", rel, kg_stats)
+    except Exception as e:
+        logger.warning("KG build skipped for {}: {}", rel, e)
+
     await session.commit()
     return "new" if not existing else "updated"
 

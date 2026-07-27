@@ -31,7 +31,8 @@ export function CitationChip({ label, citation, href, variant = "report-inline",
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLAnchorElement>) => {
-      if (citation && citation.source_type !== "web" && onClick) {
+      if (citation && onClick) {
+        // 有站内详情（含网页阅读器）时优先进详情页
         e.preventDefault();
         onClick(citation);
       }
@@ -53,12 +54,12 @@ export function CitationChip({ label, citation, href, variant = "report-inline",
   }
 
   const isWeb = citation.source_type === "web";
-  const resolvedHref = isWeb ? citation.url || href || "#" : href || "#";
+  const resolvedHref = href || (isWeb ? citation.url || "#" : "#");
 
   return (
     <a
       href={resolvedHref}
-      target={isWeb && citation.url ? "_blank" : undefined}
+      target={isWeb && !onClick && citation.url ? "_blank" : undefined}
       rel="noreferrer noopener"
       className={cn(
         "citation-chip cursor-pointer",

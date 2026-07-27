@@ -64,10 +64,12 @@ function fallbackCard(citation: Citation, href: string): CitationPreviewCard {
     locator_label: citation.locator_label || citation.heading_path || citation.relative_path || null,
     excerpt: truncate(excerpt, 520),
     score: citation.score ?? null,
-    trust_score: citation.score ?? 0.9,
+    trust_score: citation.score ?? (citation.source_type === "web" ? 0.6 : 0.9),
     href,
     external_url: citation.url || null,
-    previewable: citation.previewable ?? citation.source_type !== "web",
+    previewable: citation.previewable ?? Boolean(citation.content || citation.source_type !== "web"),
+    preview_mode: (citation.preview_mode as CitationPreviewCard["preview_mode"]) || null,
+    media_url: citation.media_url || null,
   };
 }
 
@@ -111,7 +113,10 @@ export function CitationPreviewProvider({ children }: { children: ReactNode }) {
 
   const schedulePreview = useCallback(
     (citation: Citation, href: string, rect: DOMRect) => {
-      if (!isHoverEnabled || citation.source_type === "web") return;
+      if (!isHoverEnabled) return;
+      // web：仅在可预览（有抽取正文）时悬停
+      if (citation.source_type === "web" && citation.previewable === false) return;
+      if (citation.source_type === "web" && !citation.previewable && !citation.content) return;
       clearCloseTimer();
       clearOpenTimer();
       openTimerRef.current = setTimeout(() => {
@@ -229,7 +234,9 @@ export function CitationPreviewProvider({ children }: { children: ReactNode }) {
             <header className="border-b border-border px-5 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-xs uppercase tracking-wider text-muted">知识库预览</div>
+                  <div className="text-xs uppercase tracking-wider text-muted">
+                    {previewState.citation.source_type === "web" ? "网页预览" : "知识库预览"}
+                  </div>
                   <div className="mt-1 truncate text-base font-semibold text-crimson-800">
                     {loading ? "正在加载引用预览..." : card?.title || "引用详情"}
                   </div>
@@ -248,10 +255,15 @@ export function CitationPreviewProvider({ children }: { children: ReactNode }) {
               )}
             </header>
             <div className="max-h-64 overflow-y-auto px-5 py-4 text-sm leading-7 text-ink scroll-pretty">
-              {loading ? "正在加载引用预览..." : card?.excerpt || "当前引用暂无可展示摘录。"}
+              {loading
+                ? "正在加载引用预览..."
+                : card?.excerpt || "当前引用暂无可展示摘录。"}
             </div>
-            <footer className="border-t border-border px-5 py-3 text-right text-sm font-medium text-crimson-700">
-              点击查看完整文档
+            <footer className="flex items-center justify-between gap-2 border-t border-border px-5 py-3 text-sm font-medium text-crimson-700">
+              <span className="text-xs font-normal text-muted">
+                {card?.external_url ? "可打开原文" : "点击查看完整文档"}
+              </span>
+              <span>查看详情</span>
             </footer>
           </article>
         </a>

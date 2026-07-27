@@ -10,6 +10,7 @@ from loguru import logger
 
 from app.agents.research.prompts import PLANNER_SYSTEM, REFLECTOR_SYSTEM, WRITER_SYSTEM
 from app.agents.research.state import ResearchEvidence, ResearchState
+from app.agents.research.artifact_parser import ArtifactFenceParser
 from app.core.config import settings
 from app.llm.dashscope import dashscope_client
 
@@ -407,6 +408,7 @@ async def writer_stream(
         if h.get("role") in {"user", "assistant"} and h.get("content"):
             messages.append({"role": h["role"], "content": str(h["content"])[:1500]})
     messages.append({"role": "user", "content": user_payload})
+    parser = ArtifactFenceParser()
     async for chunk in dashscope_client.chat_stream(
         messages=messages,
         model=settings.research_model,
@@ -415,9 +417,14 @@ async def writer_stream(
     ):
         ctype = chunk.get("type")
         if ctype == "delta":
-            yield {"type": "token", "content": chunk["content"]}
+            content = chunk["content"]
+            yield {"type": "token", "content": content}
+            for ev in parser.feed(content):
+                yield ev
         elif ctype == "reasoning":
             yield {"type": "reasoning", "content": chunk["content"]}
         elif ctype == "done":
+            for ev in parser.flush():
+                yield ev
             yield {"type": "done", "finish_reason": chunk.get("finish_reason", "stop")}
             break
