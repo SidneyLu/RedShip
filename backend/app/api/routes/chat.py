@@ -30,6 +30,47 @@ from app.api.streaming.ui_message import (
     extract_user_query,
     ui_message_stream_headers,
 )
+
+
+async def _sse_with_keepalive(
+    source: AsyncIterator[str],
+    *,
+    interval_sec: float = 15.0,
+) -> AsyncIterator[str]:
+    """Yield SSE comment pings while the upstream is silent (ngrok / proxy idle cutoffs)."""
+    queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
+
+    async def _pump() -> None:
+        try:
+            async for chunk in source:
+                await queue.put(("chunk", chunk))
+        except Exception as e:
+            await queue.put(("error", str(e)))
+        finally:
+            await queue.put(("end", None))
+
+    task = asyncio.create_task(_pump())
+    try:
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=interval_sec)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            if kind == "chunk" and payload is not None:
+                yield payload
+            elif kind == "error":
+                logger.warning("sse upstream error: {}", payload)
+                break
+            else:
+                break
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 from app.db.models import Message, SessionFile, Thread
 from app.db.session import get_session_factory
 from app.memory.session import build_conversation_context, maybe_update_rolling_summary
@@ -356,7 +397,7 @@ async def chat(payload: ChatRequest, user: CurrentUser, session: DbSession):
                         pass
 
     return StreamingResponse(
-        event_stream(),
+        _sse_with_keepalive(event_stream(), interval_sec=15.0),
         media_type="text/event-stream",
         headers=ui_message_stream_headers(),
     )

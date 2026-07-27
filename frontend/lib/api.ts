@@ -2,18 +2,29 @@
 
 /**
  * REST API 封装与共享类型；与 backend OpenAPI 路由对齐。
- * 浏览器侧 base 来自 NEXT_PUBLIC_API_BASE_URL（next.config 可代理 /api）。
+ * 浏览器侧 base 来自 NEXT_PUBLIC_API_BASE_URL；留空则走同源 `/api`
+ *（由 app/api/[...path] 流式代理到 backend）。
  */
 
 const TOKEN_KEY = "redship.token";
 
 /**
  * API 根路径。
- * 留空则走同源 `/api/*`，由 next.config rewrites 代理到 BACKEND_INTERNAL_URL（适合 ngrok 只穿透前端）。
+ * 留空则走同源 `/api/*`（Next Route Handler 流式代理，适合只穿透前端 / ngrok）。
  */
 export function getApiBase(): string {
   const raw = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
   return raw.replace(/\/$/, "");
+}
+
+/** Extra browser headers: skip ngrok free interstitial HTML that breaks fetch/SSE. */
+export function apiClientHeaders(init?: HeadersInit): Headers {
+  const headers = new Headers(init || {});
+  // Harmless elsewhere; required on ngrok free to avoid HTML interstitial → Network Error.
+  if (!headers.has("ngrok-skip-browser-warning")) {
+    headers.set("ngrok-skip-browser-warning", "true");
+  }
+  return headers;
 }
 
 export function getToken(): string | null {
@@ -43,7 +54,7 @@ export async function api<T = unknown>(
 ): Promise<T> {
   const base = getApiBase();
   const url = path.startsWith("http") ? path : `${base}${path}`;
-  const headers = new Headers(init.headers || {});
+  const headers = apiClientHeaders(init.headers || {});
   const token = getToken();
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);

@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # --- 检索与深度研究：控制召回量与反思轮次 ---
     retrieval_top_k: int = Field(default=20, alias="RETRIEVAL_TOP_K")
     rerank_top_k: int = Field(default=5, alias="RERANK_TOP_K")
-    research_max_iterations: int = Field(default=6, alias="RESEARCH_MAX_ITERATIONS")
+    research_max_iterations: int = Field(default=3, alias="RESEARCH_MAX_ITERATIONS")
     research_parallel_subqueries: int = Field(default=4, alias="RESEARCH_PARALLEL_SUBQUERIES")
     research_per_subquery_extracts: int = Field(default=3, alias="RESEARCH_PER_SUBQUERY_EXTRACTS")
 

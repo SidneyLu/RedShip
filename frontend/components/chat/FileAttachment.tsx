@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Paperclip, Loader2, Files } from "lucide-react";
-import { api, getApiBase, getToken, type SessionFileItem } from "@/lib/api";
+import { api, getApiBase, getToken, apiClientHeaders, type SessionFileItem } from "@/lib/api";
 import { useToast } from "@/components/providers/ToastProvider";
 
 interface Props {
@@ -66,7 +66,7 @@ export function FileAttachment({
       const resp = await fetch(`${getApiBase()}/api/threads/${activeThreadId}/files`, {
         method: "POST",
         body: form,
-        headers: { Authorization: `Bearer ${getToken() || ""}` },
+        headers: apiClientHeaders({ Authorization: `Bearer ${getToken() || ""}` }),
       });
       if (!resp.ok) {
         const err = await resp.text();

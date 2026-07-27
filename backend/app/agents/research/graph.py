@@ -1,7 +1,8 @@
 """Deep Research LangGraph（PLAN.md「深度研究」）。
 
 图：local_retrieve → planner → search → reflect →（条件回 search）→ citations → END；
-research_step 等进度经 events_queue 注入 run_research_stream；报告由 writer_stream 流式输出。
+research_step 等进度经 events_queue 注入 run_research_stream；
+规划后立即流式输出提纲，首轮检索后流式阶段性摘要，最后由 writer_stream 写完整报告。
 """
 from __future__ import annotations
 
@@ -16,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.research.nodes import (
     build_citations,
+    format_plan_outline,
+    interim_summary_stream,
     parallel_searcher,
     planner,
     reflector,
@@ -25,6 +28,11 @@ from app.agents.research.state import ResearchState
 from app.core.checkpoint import get_checkpointer
 from app.core.config import settings
 from app.knowledge.retriever import retrieve
+
+
+async def _drain_queue(queue: asyncio.Queue[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+    while not queue.empty():
+        yield queue.get_nowait()
 
 
 async def _local_retrieve_node(state: ResearchState, config: dict[str, Any]) -> dict[str, Any]:
@@ -214,17 +222,46 @@ async def run_research_stream(
         }
     }
 
+    interim_emitted = False
     async for update in graph.astream(state, config=config, stream_mode="updates"):
-        while not events_queue.empty():
-            yield events_queue.get_nowait()
+        async for ev in _drain_queue(events_queue):
+            yield ev
         for node_name, patch in update.items():
             state.update(patch)  # type: ignore[arg-type]
             logger.debug("research graph node {} done", node_name)
 
-    while not events_queue.empty():
-        yield events_queue.get_nowait()
+            if node_name == "planner":
+                # Instant outline so the bubble is not empty during long web search.
+                yield {"type": "token", "content": format_plan_outline(state)}
+                yield {
+                    "type": "research_step",
+                    "step": "outline_ready",
+                    "label": "已输出研究提纲",
+                }
+
+            if (
+                node_name == "search"
+                and not interim_emitted
+                and int(state.get("iteration") or 0) >= 1
+            ):
+                interim_emitted = True
+                yield {
+                    "type": "research_step",
+                    "step": "interim_summary",
+                    "label": "撰写阶段性摘要…",
+                    "iteration": state.get("iteration"),
+                }
+                async for ev in interim_summary_stream(state):
+                    yield ev
+
+    async for ev in _drain_queue(events_queue):
+        yield ev
 
     yield {"type": "research_step", "step": "writing", "label": "正在撰写研究报告..."}
+    yield {
+        "type": "token",
+        "content": "\n---\n\n## 完整研究报告\n\n",
+    }
 
     async for ev in writer_stream(state, thread_id=thread_id, message_id=message_id):
         yield ev

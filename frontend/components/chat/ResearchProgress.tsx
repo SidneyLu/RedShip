@@ -17,13 +17,16 @@ import { cn } from "@/lib/utils";
 import type { ResearchStep } from "@/lib/chat-types";
 
 const STEP_LABELS: Record<string, string> = {
+  local_retrieve: "本地检索",
   planning: "规划子问题",
   plan_ready: "规划完成",
+  outline_ready: "已输出提纲",
   iteration_begin: "开始检索",
   searching: "正在联网搜索",
   search_completed: "搜索完成",
   extracted: "已抽取证据",
   iteration_summary: "本轮汇总",
+  interim_summary: "阶段性摘要",
   reflecting: "正在反思评估",
   reflection_done: "反思完成",
   writing: "撰写研究报告",

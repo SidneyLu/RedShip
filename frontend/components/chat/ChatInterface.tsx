@@ -18,6 +18,7 @@ import {
   api,
   getApiBase,
   getToken,
+  apiClientHeaders,
   type Citation,
   type SessionFileItem,
   type ThreadWithMessages,
@@ -92,9 +93,9 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
         api: chatApiUrl(),
         headers: () => {
           const token = getToken();
-          const h: Record<string, string> = {};
-          if (token) h.Authorization = `Bearer ${token}`;
-          return h;
+          const h = apiClientHeaders();
+          if (token) h.set("Authorization", `Bearer ${token}`);
+          return Object.fromEntries(h.entries());
         },
         prepareSendMessagesRequest: ({ messages, headers }) => {
           // Only send a real thread UUID. useChat's client `id` is a nanoid and

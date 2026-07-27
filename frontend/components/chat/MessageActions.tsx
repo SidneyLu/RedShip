@@ -4,7 +4,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Copy, Check, Download, ChevronDown, Loader2 } from "lucide-react";
-import { getApiBase, getToken } from "@/lib/api";
+import { getApiBase, getToken, apiClientHeaders } from "@/lib/api";
 import { useToast } from "@/components/providers/ToastProvider";
 import { cn } from "@/lib/utils";
 
@@ -62,7 +62,7 @@ export function MessageActions({
     try {
       const url = `${getApiBase()}/api/threads/${threadId}/messages/${messageId}/export?format=${format}`;
       const resp = await fetch(url, {
-        headers: { Authorization: `Bearer ${getToken() || ""}` },
+        headers: apiClientHeaders({ Authorization: `Bearer ${getToken() || ""}` }),
       });
       if (!resp.ok) {
         const err = await resp.text();

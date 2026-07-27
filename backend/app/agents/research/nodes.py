@@ -8,7 +8,12 @@ from typing import Any, AsyncIterator
 
 from loguru import logger
 
-from app.agents.research.prompts import PLANNER_SYSTEM, REFLECTOR_SYSTEM, WRITER_SYSTEM
+from app.agents.research.prompts import (
+    INTERIM_SUMMARY_SYSTEM,
+    PLANNER_SYSTEM,
+    REFLECTOR_SYSTEM,
+    WRITER_SYSTEM,
+)
 from app.agents.research.state import ResearchEvidence, ResearchState
 from app.agents.research.artifact_parser import ArtifactFenceParser
 from app.core.config import settings
@@ -391,6 +396,9 @@ async def writer_stream(
         if c.get("url"):
             header += f" url={c['url']}"
         body = c.get("content") or c.get("snippet") or ""
+        # Cap per-source body so writer latency stays bounded.
+        if len(body) > 2500:
+            body = body[:2500] + "…"
         evidence_block_parts.append(
             f"{header}\n引用标签用 ({c['ordinal']})，链接 id 用 {c['id']}\n{body}"
         )
@@ -430,3 +438,84 @@ async def writer_stream(
                 yield ev
             yield {"type": "done", "finish_reason": chunk.get("finish_reason", "stop")}
             break
+
+
+def format_plan_outline(state: ResearchState) -> str:
+    """规划完成后立即输出提纲（无 LLM），让用户立刻看到正文。"""
+    query = (state.get("query") or "").strip()
+    summary = (state.get("plan_summary") or "").strip()
+    subs = [str(s).strip() for s in (state.get("sub_questions") or []) if str(s).strip()]
+    lines = [
+        "## 研究提纲",
+        "",
+        f"**研究问题**：{query}" if query else "**研究问题**：",
+        "",
+    ]
+    if summary:
+        lines.extend([summary, ""])
+    if subs:
+        lines.append("### 拟调研子问题")
+        for i, q in enumerate(subs, start=1):
+            lines.append(f"{i}. {q}")
+        lines.append("")
+    lines.append("> 正在检索与核实证据，稍后给出阶段性摘要与完整报告…")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _evidence_brief_for_interim(state: ResearchState, *, limit: int = 12) -> str:
+    evidence = state.get("evidence") or []
+    session_passages = state.get("session_passages") or []
+    kb_passages = state.get("kb_passages") or []
+    parts: list[str] = []
+    for i, p in enumerate(session_passages[:4], start=1):
+        title = p.get("title") or p.get("filename") or "会话附件"
+        snip = (p.get("text") or p.get("content") or "")[:220]
+        parts.append(f"[会话{i}] 《{title}》 {snip}")
+    for i, p in enumerate(kb_passages[:4], start=1):
+        title = p.get("title") or "知识库"
+        snip = (p.get("text") or p.get("content") or "")[:220]
+        parts.append(f"[库{i}] 《{title}》 {snip}")
+    for i, ev in enumerate(evidence[:limit], start=1):
+        title = ev.get("title") or ev.get("url") or f"证据{i}"
+        snip = (ev.get("snippet") or ev.get("content") or "")[:280]
+        parts.append(f"[网{i}] 《{title}》 {snip}")
+    return "\n".join(parts) or "（暂无证据摘要）"
+
+
+async def interim_summary_stream(state: ResearchState) -> AsyncIterator[dict[str, Any]]:
+    """首轮检索后用 flash 快速写阶段性摘要（无 thinking），改善出字体感。"""
+    brief = _evidence_brief_for_interim(state)
+    messages = [
+        {"role": "system", "content": INTERIM_SUMMARY_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"# 研究问题\n{state.get('query') or ''}\n\n"
+                f"# 当前证据摘要\n{brief}\n\n"
+                "请输出阶段性摘要。"
+            ),
+        },
+    ]
+    try:
+        async for chunk in dashscope_client.chat_stream(
+            messages=messages,
+            model=settings.chat_model,
+            temperature=0.3,
+            extra_body={"enable_thinking": False},
+        ):
+            ctype = chunk.get("type")
+            if ctype == "delta":
+                yield {"type": "token", "content": chunk["content"]}
+            elif ctype == "done":
+                break
+    except Exception as e:
+        logger.warning("interim_summary_stream failed: {}", e)
+        yield {
+            "type": "token",
+            "content": (
+                "\n## 阶段性摘要\n\n"
+                "首轮检索已完成，正在继续核实与补充证据；完整报告将在检索结束后给出。\n"
+            ),
+        }
+    yield {"type": "token", "content": "\n\n"}

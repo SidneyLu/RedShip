@@ -63,7 +63,7 @@ RedShip/
 ├── bibliography/          # 可扩展知识库（挂载进容器）
 ├── raw/                   # MinerU 输入（PDF/DOCX，仅 mineru compose 使用）
 ├── export/                # export-data.sh 默认输出目录
-├── scripts/               # 数据导出/导入脚本
+├── scripts/               # 数据迁移 + 全量部署导出/导入
 ├── backend/               # FastAPI + LangGraph
 ├── frontend/              # Next.js + Tailwind（crimson/canvas 配色）
 ├── legacy/                # 归档说明
@@ -192,6 +192,8 @@ docker compose -f docker-compose.mineru.yml run --rm mineru
 |------|------|
 | [`scripts/export-data.sh`](scripts/export-data.sh) | 停服 → 打包 Docker volume + `bibliography/` → 生成 `manifest.json` |
 | [`scripts/import-data.sh`](scripts/import-data.sh) | 按 manifest 还原 volume 与文献目录 |
+| [`scripts/export-deploy.sh`](scripts/export-deploy.sh) / [`.ps1`](scripts/export-deploy.ps1) | 全量部署包：生产镜像 + compose + 可选数据 |
+| [`scripts/import-deploy.sh`](scripts/import-deploy.sh) | 服务器端加载镜像、可选还原数据、compose up |
 | [`scripts/lib/data-transfer.sh`](scripts/lib/data-transfer.sh) | 公共库（一般无需直接调用） |
 
 ### 备份内容
@@ -241,6 +243,49 @@ docker compose up -d
 **勿**在完整还原后再跑 `alembic upgrade head` 或全量 `reindex`（volume 里已有 schema 与向量）。仅当只拷了 PG、未拷 Milvus 三件套时，才需要在 B 机对 `bibliography/` 做 reindex。
 
 跨 compose 迁移示例：A 机 `-f docker-compose.data.yml` 导出，B 机 `-f docker-compose.yml` 导入（按 volume 逻辑名匹配，project 前缀可以不同）。
+
+### 全量部署导出（服务器端）
+
+把**生产镜像** + compose 骨架打成可离线部署的包（只用 `docker-compose.yml`，**不含** `docker-compose.override.yml` / `.env` 密钥 / `node_modules`）。
+
+```bash
+# Git Bash / WSL（推荐）
+./scripts/export-deploy.sh                  # 构建并 docker save → ./export/redship-deploy-*/
+./scripts/export-deploy.sh --with-data      # 同上，并附带 volume/bibliography（调用 export-data.sh）
+./scripts/export-deploy.sh --skip-build     # 不重建，用本地已有镜像
+./scripts/export-deploy.sh --no-final-tar   # 只要目录，不要外层 .tar.gz
+
+# Windows PowerShell
+.\scripts\export-deploy.ps1
+.\scripts\export-deploy.ps1 -WithData
+```
+
+包内容大致为：
+
+```
+export/redship-deploy-YYYYMMDD-HHMMSS/
+├── deploy-manifest.json
+└── deploy/
+    ├── docker-compose.yml      # backend/frontend 已钉死为 image:（无需现场 build）
+    ├── .env.example
+    ├── bibliography/
+    ├── images/redship-images.tar.gz
+    ├── backend/Dockerfile      # 仅备查；有镜像时不需要
+    ├── frontend/Dockerfile
+    └── scripts/import-deploy.sh + import-data.sh …
+```
+
+目标服务器：
+
+```bash
+tar xzf redship-deploy-….tar.gz
+cd redship-deploy-…/deploy
+./scripts/import-deploy.sh .                 # load 镜像 → .env → 可选 data → up -d
+# ./scripts/import-deploy.sh . --force-data  # 覆盖已有 volume
+# ./scripts/import-deploy.sh . --skip-up     # 只加载，不启动
+```
+
+编辑 `.env`（`DASHSCOPE_API_KEY`、`JWT_SECRET` 等）后再对外服务。公网同源部署保持 `NEXT_PUBLIC_API_BASE_URL` 为空。
 
 ## 技术栈
 

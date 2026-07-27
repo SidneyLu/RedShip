@@ -25,7 +25,8 @@ def ui_message_stream_headers() -> dict[str, str]:
     """Response headers required by AI SDK useChat / DefaultChatTransport."""
     return {
         "x-vercel-ai-ui-message-stream": "v1",
-        "Cache-Control": "no-cache",
+        # no-transform: avoid intermediary (ngrok / Next rewrite) buffering SSE
+        "Cache-Control": "no-cache, no-transform",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     }

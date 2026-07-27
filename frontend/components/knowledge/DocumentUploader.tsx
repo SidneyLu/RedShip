@@ -4,7 +4,7 @@
 
 import { useRef, useState } from "react";
 import { Loader2, Upload } from "lucide-react";
-import { getApiBase, getToken } from "@/lib/api";
+import { getApiBase, getToken, apiClientHeaders } from "@/lib/api";
 import { useToast } from "@/components/providers/ToastProvider";
 
 interface Props {
@@ -25,7 +25,7 @@ export function DocumentUploader({ onUploaded, disabled }: Props) {
       const resp = await fetch(`${getApiBase()}/api/knowledge/documents/upload`, {
         method: "POST",
         body: form,
-        headers: { Authorization: `Bearer ${getToken() || ""}` },
+        headers: apiClientHeaders({ Authorization: `Bearer ${getToken() || ""}` }),
       });
       if (!resp.ok) {
         const err = await resp.text();

@@ -4,7 +4,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import type { Citation, CitationPreviewPage } from "@/lib/api";
-import { getApiBase, getToken } from "@/lib/api";
+import { getApiBase, getToken, apiClientHeaders } from "@/lib/api";
 
 interface Props {
   citation?: Citation | null;
@@ -54,7 +54,7 @@ function AuthImage({ src, alt }: { src: string; alt: string }) {
     let revoked: string | null = null;
     let cancelled = false;
     const url = src.startsWith("http") ? src : `${getApiBase()}${src}`;
-    fetch(url, { headers: { Authorization: `Bearer ${getToken() || ""}` } })
+    fetch(url, { headers: apiClientHeaders({ Authorization: `Bearer ${getToken() || ""}` }) })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.blob();

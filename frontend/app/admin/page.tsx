@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Loader2, RefreshCw } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
-import { api, getApiBase, getToken, type KnowledgeStats } from "@/lib/api";
+import { api, getApiBase, getToken, apiClientHeaders, type KnowledgeStats } from "@/lib/api";
 import { useToast } from "@/components/providers/ToastProvider";
 import { useAuth } from "@/components/providers/AuthProvider";
 
@@ -67,7 +67,10 @@ function AdminInner() {
       const url = `${getApiBase()}/api/admin/bibliography/sync/stream`;
       const resp = await fetch(url, {
         method: "GET",
-        headers: { Authorization: `Bearer ${getToken() || ""}`, Accept: "text/event-stream" },
+        headers: apiClientHeaders({
+          Authorization: `Bearer ${getToken() || ""}`,
+          Accept: "text/event-stream",
+        }),
       });
       if (!resp.ok || !resp.body) {
         throw new Error(`HTTP ${resp.status}`);
