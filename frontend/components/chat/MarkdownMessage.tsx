@@ -11,25 +11,17 @@ import remarkGfm from "remark-gfm";
 import { LayoutDashboard } from "lucide-react";
 import { CitationChip } from "@/components/citations/CitationChip";
 import type { Citation } from "@/lib/api";
+import {
+  CITATION_HREF_RE,
+  citationChipLabel,
+  findCitation,
+  normalizeCitationMarkdown,
+} from "@/lib/citation-labels";
 import { cn } from "@/lib/utils";
 import type { ArtifactPart } from "@/lib/chat-types";
 
-/** 后端 generator 写入的引用 href 模式 */
-const CITATION_HREF_RE = /^\/threads\/[^/]+\/messages\/[^/]+\/citations\/([^/]+)$/i;
-/** 仅当链接文字为序号标签时才替换为 chip */
-const LABEL_RE = /^\s*(?:\(\d+\)|#\d+|\[\d+\])\s*$/;
-
 const ARTIFACT_FENCE_RE =
   /```artifact-html\s*\n(?:<!--\s*title:\s*(.+?)\s*-->\s*\n)?([\s\S]*?)```/gi;
-
-function findCitation(citations: Citation[] | null | undefined, id: string): Citation | undefined {
-  if (!citations) return undefined;
-  return (
-    citations.find((c) => String(c.id) === id) ||
-    citations.find((c) => String(c.ordinal) === id) ||
-    undefined
-  );
-}
 
 function extractTitleFromCode(code: string, fallback: string): string {
   const m = /<!--\s*title:\s*(.+?)\s*-->/i.exec(code);
@@ -39,12 +31,16 @@ function extractTitleFromCode(code: string, fallback: string): string {
 export function MarkdownMessage({
   content,
   citations,
+  threadId,
+  messageId,
   onCitationClick,
   onOpenArtifact,
   className,
 }: {
   content: string;
   citations?: Citation[] | null;
+  threadId?: string | null;
+  messageId?: string | null;
   onCitationClick?: (citation: Citation) => void;
   onOpenArtifact?: (artifact: ArtifactPart) => void;
   className?: string;
@@ -52,21 +48,28 @@ export function MarkdownMessage({
   const { display, placeholders } = useMemo(() => {
     const map = new Map<string, ArtifactPart>();
     let i = 0;
-    const displayMd = content.replace(ARTIFACT_FENCE_RE, (_full, titleGroup: string, code: string) => {
-      i += 1;
-      const id = `md-artifact-${i}`;
-      const title = (titleGroup || extractTitleFromCode(code, `可视化 ${i}`)).trim();
-      map.set(id, {
-        id,
-        title,
-        language: "html",
-        code: code.trim(),
-        status: "done",
-      });
-      return `\n\n[[ARTIFACT:${id}]]\n\n`;
+    const normalized = normalizeCitationMarkdown(content, citations, {
+      threadId,
+      messageId,
     });
+    const displayMd = normalized.replace(
+      ARTIFACT_FENCE_RE,
+      (_full, titleGroup: string, code: string) => {
+        i += 1;
+        const id = `md-artifact-${i}`;
+        const title = (titleGroup || extractTitleFromCode(code, `可视化 ${i}`)).trim();
+        map.set(id, {
+          id,
+          title,
+          language: "html",
+          code: code.trim(),
+          status: "done",
+        });
+        return `\n\n[[ARTIFACT:${id}]]\n\n`;
+      }
+    );
     return { display: displayMd, placeholders: map };
-  }, [content]);
+  }, [content, citations, threadId, messageId]);
 
   return (
     <ReactMarkdown
@@ -76,14 +79,13 @@ export function MarkdownMessage({
         a({ href, children, ...rest }) {
           const hrefStr = String(href || "");
           const match = CITATION_HREF_RE.exec(hrefStr);
-          const childText =
-            (Array.isArray(children) ? children.join("") : String(children || "")).trim();
-          if (match && childText && LABEL_RE.test(childText)) {
+          if (match) {
             const citationId = match[1];
             const citation = findCitation(citations, citationId);
+            const childText = flattenMarkdownChildren(children).trim();
             return (
               <CitationChip
-                label={childText}
+                label={citationChipLabel(citation, childText || `(${citationId})`)}
                 citation={citation}
                 href={hrefStr}
                 onClick={onCitationClick}
@@ -104,11 +106,7 @@ export function MarkdownMessage({
           );
         },
         p({ children, ...rest }) {
-          const flat = Array.isArray(children)
-            ? children.map((c) => (typeof c === "string" ? c : "")).join("")
-            : typeof children === "string"
-              ? children
-              : "";
+          const flat = flattenMarkdownChildren(children);
           const m = /\[\[ARTIFACT:([^\]]+)\]\]/.exec(flat);
           if (m) {
             const art = placeholders.get(m[1]);
@@ -174,4 +172,15 @@ export function MarkdownMessage({
       {display}
     </ReactMarkdown>
   );
+}
+
+function flattenMarkdownChildren(children: unknown): string {
+  if (children == null || children === false) return "";
+  if (typeof children === "string" || typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map(flattenMarkdownChildren).join("");
+  if (typeof children === "object" && children !== null && "props" in children) {
+    const props = (children as { props?: { children?: unknown } }).props;
+    return flattenMarkdownChildren(props?.children);
+  }
+  return "";
 }

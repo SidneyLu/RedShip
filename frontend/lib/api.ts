@@ -7,12 +7,13 @@
 
 const TOKEN_KEY = "redship.token";
 
-/** API 根路径；SSR 与客户端均读 NEXT_PUBLIC_API_BASE_URL */
+/**
+ * API 根路径。
+ * 留空则走同源 `/api/*`，由 next.config rewrites 代理到 BACKEND_INTERNAL_URL（适合 ngrok 只穿透前端）。
+ */
 export function getApiBase(): string {
-  if (typeof window === "undefined") {
-    return process.env.NEXT_PUBLIC_API_BASE_URL || "";
-  }
-  return process.env.NEXT_PUBLIC_API_BASE_URL || "";
+  const raw = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+  return raw.replace(/\/$/, "");
 }
 
 export function getToken(): string | null {

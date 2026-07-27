@@ -2,8 +2,18 @@
 
 /** 深度研究模式侧边进度：将 research_step 事件映射为步骤 UI。 */
 
-import { useMemo } from "react";
-import { Loader2, Search, Compass, Lightbulb, PencilLine, BookOpen, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+  Loader2,
+  Search,
+  Compass,
+  Lightbulb,
+  PencilLine,
+  BookOpen,
+  Sparkles,
+  ChevronDown,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { ResearchStep } from "@/lib/chat-types";
 
 const STEP_LABELS: Record<string, string> = {
@@ -42,6 +52,7 @@ export function ResearchProgress({
   compact?: boolean;
   title?: string;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const filteredSteps = useMemo(
     () => steps.filter((s) => s.step !== "extracted" || s.title || s.url),
     [steps]
@@ -51,29 +62,54 @@ export function ResearchProgress({
 
   if (compact) {
     const visibleSteps = filteredSteps.slice(-5);
+    const latest = visibleSteps[visibleSteps.length - 1];
+    const LatestIcon = latest ? stepIcon(latest.step) : Sparkles;
+    const latestLabel = latest
+      ? `${STEP_LABELS[latest.step] || latest.step}${latest.iteration ? ` · 第 ${latest.iteration} 轮` : ""}`
+      : stage || (loading ? "处理中" : "已完成");
+
     return (
-      <section className="mt-3 rounded-2xl border border-border bg-canvas/60 px-4 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm font-semibold text-crimson-800">
-            <Sparkles className="h-4 w-4" />
-            {title}
-          </div>
-          <div className="flex items-center gap-2 text-xs text-muted">
-            {stage ? <span>当前阶段：{stage}</span> : null}
-            {loading ? <Loader2 className="h-4 w-4 animate-spin text-crimson-600" /> : <span>已完成</span>}
-          </div>
-        </div>
-        {visibleSteps.length > 0 ? (
-          <div className="scroll-pretty mt-3 flex gap-2 overflow-x-auto pb-1">
+      <section className="mt-1.5 shrink-0 rounded-xl border border-border bg-canvas/60">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex w-full items-center gap-1.5 px-2 py-1 text-left"
+          aria-expanded={expanded}
+        >
+          <Sparkles className="h-3 w-3 shrink-0 text-crimson-700" />
+          <span className="shrink-0 text-[11px] font-semibold text-crimson-800">{title}</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
+            <LatestIcon className="mr-1 inline h-3 w-3 align-[-1px] text-crimson-600" />
+            {latestLabel}
+            {latest?.title || latest?.query
+              ? ` · ${latest.title || latest.query}`
+              : stage && latest
+                ? ` · ${stage}`
+                : ""}
+          </span>
+          {loading ? (
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-crimson-600" />
+          ) : (
+            <span className="shrink-0 text-[10px] text-muted">完成</span>
+          )}
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 shrink-0 text-muted transition",
+              expanded && "rotate-180"
+            )}
+          />
+        </button>
+        {expanded && visibleSteps.length > 0 ? (
+          <div className="scroll-pretty flex gap-1.5 overflow-x-auto border-t border-border/70 px-2 py-1.5">
             {visibleSteps.map((s, idx) => {
               const Icon = stepIcon(s.step);
               const label = STEP_LABELS[s.step] || s.step;
               return (
                 <div
                   key={`${s.step}-${idx}`}
-                  className="flex min-w-[180px] items-start gap-2 rounded-xl border border-border bg-card px-3 py-2 text-xs"
+                  className="flex min-w-[140px] max-w-[200px] items-start gap-1.5 rounded-lg border border-border bg-card px-2 py-1.5 text-[11px]"
                 >
-                  <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-crimson-700" />
+                  <Icon className="mt-0.5 h-3 w-3 shrink-0 text-crimson-700" />
                   <div className="min-w-0">
                     <div className="truncate font-medium text-ink">
                       {label}

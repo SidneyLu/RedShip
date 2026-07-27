@@ -4,9 +4,13 @@ AI SDK UI Message Stream（x-vercel-ai-ui-message-stream: v1）：
   start / data-ack / data-stage / data-research-step / data-artifact / data-citations
   text-start|delta|end · reasoning-start|delta|end · finish · [DONE]
 内部 LangGraph 仍产出 dict 事件，在本路由边界经 UIMessageStreamEncoder 翻译。
+
+Assistant Message 在流正常结束时写入；客户端断开 / abort / 异常时也会把已产生的
+部分正文与 citations / research_events / artifacts 落库，避免切线程丢半截回复。
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
@@ -57,16 +61,121 @@ def _resolve_query(payload: ChatRequest) -> str:
     return ""
 
 
+def _parse_thread_id(raw: str | None) -> uuid.UUID | None:
+    """Accept only real thread UUIDs; ignore AI SDK chat nanoids (e.g. g2joAcjd21dIlwY2)."""
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        return uuid.UUID(str(raw).strip())
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+async def _persist_assistant_message(
+    *,
+    factory: Any,
+    assistant_message_id: str,
+    thread_id: str,
+    user_id: str,
+    mode: str,
+    query: str,
+    tokens: list[str],
+    citations: list[dict[str, Any]],
+    research_events: list[dict[str, Any]],
+    reasoning: list[str],
+    attachments_meta: list[dict[str, Any]],
+    incomplete: bool,
+) -> bool:
+    """Write assistant Message (+ thread touch). Returns True if a row was written."""
+    content_markdown = "".join(tokens).strip()
+    reasoning_text = "".join(reasoning).strip() or None
+    if (
+        incomplete
+        and not content_markdown
+        and not citations
+        and not research_events
+        and not reasoning_text
+    ):
+        return False
+
+    artifacts = (
+        extract_artifacts_from_markdown(content_markdown) if mode == "research" else []
+    )
+    extra_metadata: dict[str, Any] | None = {"incomplete": True} if incomplete else None
+
+    async with factory() as save_session:
+        existing = await save_session.get(Message, assistant_message_id)
+        if existing is not None:
+            existing.content_markdown = content_markdown
+            existing.citations = citations or None
+            existing.research_events = research_events or None
+            existing.reasoning = reasoning_text
+            existing.attachments = attachments_meta or None
+            existing.artifacts = artifacts or None
+            if incomplete:
+                meta = dict(existing.extra_metadata or {})
+                meta["incomplete"] = True
+                existing.extra_metadata = meta
+            elif existing.extra_metadata and "incomplete" in existing.extra_metadata:
+                meta = dict(existing.extra_metadata)
+                meta.pop("incomplete", None)
+                existing.extra_metadata = meta or None
+        else:
+            save_session.add(
+                Message(
+                    id=assistant_message_id,
+                    thread_id=thread_id,
+                    role="assistant",
+                    mode=mode,
+                    content_markdown=content_markdown,
+                    citations=citations or None,
+                    research_events=research_events or None,
+                    reasoning=reasoning_text,
+                    attachments=attachments_meta or None,
+                    artifacts=artifacts or None,
+                    extra_metadata=extra_metadata,
+                )
+            )
+
+        th = (
+            await save_session.execute(select(Thread).where(Thread.id == thread_id))
+        ).scalar_one()
+        th.last_message_at = datetime.now(timezone.utc)
+        if th.title in {"新对话", "", None}:
+            th.title = query[:32] or "新对话"
+        await save_session.commit()
+
+        if not incomplete:
+            try:
+                await maybe_update_rolling_summary(save_session, thread_id)
+            except Exception as e:
+                logger.warning("rolling summary hook failed: {}", e)
+
+            try:
+                await extract_and_store(
+                    save_session,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    user_query=query,
+                    assistant_answer=content_markdown,
+                )
+            except Exception as e:
+                logger.warning("user memory extract hook failed: {}", e)
+
+    return True
+
+
 @router.post("")
 async def chat(payload: ChatRequest, user: CurrentUser, session: DbSession):
     query = _resolve_query(payload)
     if not query:
         raise HTTPException(status_code=400, detail="Empty query")
     mode = payload.mode if payload.mode in {"chat", "research"} else "chat"
-    thread_id_hint = payload.thread_id or payload.id
+    # Prefer explicit thread_id; payload.id is often the useChat client id (nanoid), not a DB UUID.
+    thread_id_hint = _parse_thread_id(payload.thread_id) or _parse_thread_id(payload.id)
 
     thread: Thread | None = None
-    if thread_id_hint:
+    if thread_id_hint is not None:
         thread = (
             await session.execute(
                 select(Thread).where(Thread.id == thread_id_hint, Thread.user_id == user.id)
@@ -132,6 +241,40 @@ async def chat(payload: ChatRequest, user: CurrentUser, session: DbSession):
     async def event_stream() -> AsyncIterator[str]:
         encoder = UIMessageStreamEncoder(message_id=assistant_message_id)
         factory = get_session_factory()
+        citations: list[dict[str, Any]] = []
+        tokens: list[str] = []
+        research_events: list[dict[str, Any]] = []
+        reasoning: list[str] = []
+        persisted = False
+
+        async def persist(*, incomplete: bool) -> None:
+            nonlocal persisted
+            if persisted:
+                return
+            try:
+                wrote = await _persist_assistant_message(
+                    factory=factory,
+                    assistant_message_id=assistant_message_id,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    mode=mode,
+                    query=query,
+                    tokens=tokens,
+                    citations=citations,
+                    research_events=research_events,
+                    reasoning=reasoning,
+                    attachments_meta=attachments_meta,
+                    incomplete=incomplete,
+                )
+                if wrote:
+                    persisted = True
+            except Exception as e:
+                logger.warning(
+                    "assistant message persist failed (incomplete={}): {}",
+                    incomplete,
+                    e,
+                )
+
         async with factory() as work_session:
             try:
                 for line in encoder.start(
@@ -141,11 +284,6 @@ async def chat(payload: ChatRequest, user: CurrentUser, session: DbSession):
                     assistant_message_id=assistant_message_id,
                 ):
                     yield line
-
-                citations: list[dict[str, Any]] = []
-                tokens: list[str] = []
-                research_events: list[dict[str, Any]] = []
-                reasoning: list[str] = []
 
                 if mode == "chat":
                     async for ev in run_rag_stream(
@@ -191,56 +329,31 @@ async def chat(payload: ChatRequest, user: CurrentUser, session: DbSession):
                         for line in encoder.map_event(ev):
                             yield line
 
-                content_markdown = "".join(tokens).strip()
-                artifacts = (
-                    extract_artifacts_from_markdown(content_markdown)
-                    if mode == "research"
-                    else []
-                )
-                async with factory() as save_session:
-                    assistant_msg = Message(
-                        id=assistant_message_id,
-                        thread_id=thread_id,
-                        role="assistant",
-                        mode=mode,
-                        content_markdown=content_markdown,
-                        citations=citations or None,
-                        research_events=research_events or None,
-                        reasoning="".join(reasoning) or None,
-                        attachments=attachments_meta or None,
-                        artifacts=artifacts or None,
-                    )
-                    save_session.add(assistant_msg)
-                    th = (
-                        await save_session.execute(select(Thread).where(Thread.id == thread_id))
-                    ).scalar_one()
-                    th.last_message_at = datetime.now(timezone.utc)
-                    if th.title in {"新对话", "", None}:
-                        th.title = query[:32] or "新对话"
-                    await save_session.commit()
-
-                    try:
-                        await maybe_update_rolling_summary(save_session, thread_id)
-                    except Exception as e:
-                        logger.warning("rolling summary hook failed: {}", e)
-
-                    try:
-                        await extract_and_store(
-                            save_session,
-                            user_id=user_id,
-                            thread_id=thread_id,
-                            user_query=query,
-                            assistant_answer=content_markdown,
-                        )
-                    except Exception as e:
-                        logger.warning("user memory extract hook failed: {}", e)
-
+                await persist(incomplete=False)
                 for line in encoder.finish():
                     yield line
+            except asyncio.CancelledError:
+                logger.info(
+                    "chat stream cancelled (disconnect/abort); persisting partial "
+                    "assistant message thread_id={} chars={}",
+                    thread_id,
+                    sum(len(t) for t in tokens),
+                )
+                # Shield so task cancellation cannot interrupt the DB write.
+                await asyncio.shield(persist(incomplete=True))
+                return
             except Exception as e:
                 logger.exception("chat stream failed: {}", e)
+                await persist(incomplete=True)
                 for line in encoder.emit_error(str(e), terminate=True):
                     yield line
+            finally:
+                # GeneratorExit / aclose path (client stopped reading) — no CancelledError.
+                if not persisted:
+                    try:
+                        await asyncio.shield(persist(incomplete=True))
+                    except Exception:
+                        pass
 
     return StreamingResponse(
         event_stream(),

@@ -5,7 +5,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, type ChatStatus } from "ai";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { Loader2, MessageSquare, Sparkles } from "lucide-react";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
@@ -61,8 +62,18 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
 
   const threadIdRef = useRef(threadId);
   const modeRef = useRef(mode);
+  const statusRef = useRef<ChatStatus>("ready");
+  /** Thread that owns the in-flight useChat stream (may differ from the viewed thread). */
+  const streamOwnerThreadIdRef = useRef<string | null>(null);
+  /**
+   * When non-null, the UI is detached from useChat.messages so a background stream
+   * can keep updating that array without clobbering the thread the user is viewing.
+   */
+  const [viewMessages, setViewMessages] = useState<RedShipUIMessage[] | null>(null);
+  const attachedToStreamRef = useRef(true);
   threadIdRef.current = threadId;
   modeRef.current = mode;
+  attachedToStreamRef.current = viewMessages === null;
 
   const reloadThreads = useCallback(async () => {
     try {
@@ -85,15 +96,19 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
           if (token) h.Authorization = `Bearer ${token}`;
           return h;
         },
-        prepareSendMessagesRequest: ({ messages, id, headers }) => ({
-          headers,
-          body: {
-            id: threadIdRef.current || id,
-            thread_id: threadIdRef.current,
-            mode: modeRef.current,
-            messages: messages.slice(-1),
-          },
-        }),
+        prepareSendMessagesRequest: ({ messages, headers }) => {
+          // Only send a real thread UUID. useChat's client `id` is a nanoid and
+          // must not be used as threads.id (Postgres UUID) — that causes 500 / failed to fetch.
+          const tid = threadIdRef.current;
+          return {
+            headers,
+            body: {
+              ...(tid ? { id: tid, thread_id: tid } : {}),
+              mode: modeRef.current,
+              messages: messages.slice(-1),
+            },
+          };
+        },
       }),
     []
   );
@@ -111,12 +126,20 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
     onData: (dataPart) => {
       if (dataPart.type === "data-ack") {
         const tid = dataPart.data?.thread_id;
-        if (tid && tid !== threadIdRef.current) {
-          setThreadId(tid);
-          router.replace(`/?thread=${tid}`);
+        if (tid) {
+          streamOwnerThreadIdRef.current = tid;
+          // Only navigate if the user is still attached to this stream.
+          if (attachedToStreamRef.current && tid !== threadIdRef.current) {
+            setThreadId(tid);
+            router.replace(`/?thread=${tid}`);
+          } else if (!attachedToStreamRef.current) {
+            void reloadThreadsRef.current();
+          }
         }
         return;
       }
+      // Live chrome (stage / ego / artifacts) only when viewing the streaming thread.
+      if (!attachedToStreamRef.current) return;
       if (dataPart.type === "data-stage") {
         const label =
           (typeof dataPart.data?.label === "string" && dataPart.data.label) ||
@@ -193,18 +216,53 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
     },
     onFinish: async ({ isAbort, isError, message }) => {
       setStage(null);
-      const tid =
-        threadIdRef.current ||
-        message.metadata?.threadId ||
+      const streamTid =
+        (typeof message.metadata?.threadId === "string" && message.metadata.threadId) ||
+        streamOwnerThreadIdRef.current ||
         undefined;
+      const tid = streamTid || threadIdRef.current || undefined;
+      streamOwnerThreadIdRef.current = null;
+
+      const adoptViewedThreadIntoChat = async () => {
+        const currentTid = threadIdRef.current;
+        try {
+          if (currentTid) {
+            const fresh = await api<ThreadWithMessages>(`/api/threads/${currentTid}`);
+            if (threadIdRef.current !== currentTid) return;
+            setThreadMeta(fresh);
+            setMessages(toUIMessages(fresh.messages));
+          } else {
+            setMessages([]);
+          }
+          setViewMessages(null);
+          setLiveResearchSteps([]);
+          setLiveArtifacts(new Map());
+        } catch {
+          /* keep detached view */
+        }
+      };
+
+      // Abort/error: keep local partials if still attached (Stop button).
+      // Backend persists on disconnect; switching back reloads from DB.
       if (!tid || isAbort || isError) {
         void reloadThreadsRef.current();
+        if (!attachedToStreamRef.current) {
+          await adoptViewedThreadIntoChat();
+        }
+        return;
+      }
+      // Stream finished while user views another thread: DB already has the full
+      // message; adopt the currently viewed thread into useChat without overwrite race.
+      if (threadIdRef.current !== tid) {
+        void reloadThreadsRef.current();
+        await adoptViewedThreadIntoChat();
         return;
       }
       try {
         const fresh = await api<ThreadWithMessages>(`/api/threads/${tid}`);
         setThreadMeta(fresh);
         setMessages(toUIMessages(fresh.messages));
+        setViewMessages(null);
         setLiveResearchSteps([]);
         setLiveArtifacts(new Map());
       } catch {
@@ -214,7 +272,12 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
     },
   });
 
-  const isBusy = status === "submitted" || status === "streaming";
+  const streamBusy = status === "submitted" || status === "streaming";
+  /** UI busy only when this view is attached to the in-flight stream. */
+  const isBusy = streamBusy && viewMessages === null;
+  const backgroundBusy = streamBusy && viewMessages !== null;
+  const displayMessages = viewMessages ?? messages;
+  statusRef.current = status;
 
   useEffect(() => {
     if (!user) return;
@@ -228,18 +291,39 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
       return;
     }
     let cancelled = false;
+    const busy =
+      statusRef.current === "submitted" || statusRef.current === "streaming";
+    const owner = streamOwnerThreadIdRef.current;
+    const reattachToStream = busy && owner === threadId;
+
     api<ThreadWithMessages>(`/api/threads/${threadId}`)
       .then((t) => {
         if (cancelled) return;
         setThreadMeta(t);
         setMode(t.mode);
-        if (status === "ready" || status === "error") {
-          setMessages(toUIMessages(t.messages));
+        if (reattachToStream) {
+          // Show live useChat.messages for the thread still streaming.
+          setViewMessages(null);
+          clearError();
+          return;
+        }
+        if (busy && owner !== threadId) {
+          // Background stream owns useChat.messages — load this thread into the overlay.
+          // owner may be null before data-ack.
+          setViewMessages(toUIMessages(t.messages));
           setLiveResearchSteps([]);
           setLiveArtifacts(new Map());
           setStage(null);
+          setActiveArtifact(null);
           clearError();
+          return;
         }
+        setViewMessages(null);
+        setMessages(toUIMessages(t.messages));
+        setLiveResearchSteps([]);
+        setLiveArtifacts(new Map());
+        setStage(null);
+        clearError();
       })
       .catch(() => {
         if (!cancelled) setThreadMeta(null);
@@ -258,14 +342,19 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
   }, [threadId]);
 
   const researchSteps = useMemo(() => {
-    const fromParts = getResearchStepsFromMessages(messages);
+    const fromParts = getResearchStepsFromMessages(displayMessages);
+    if (viewMessages !== null) return fromParts;
     if (liveResearchSteps.length === 0) return fromParts;
     if (isBusy) return liveResearchSteps;
     return fromParts.length > 0 ? fromParts : liveResearchSteps;
-  }, [messages, liveResearchSteps, isBusy]);
+  }, [displayMessages, liveResearchSteps, isBusy, viewMessages]);
 
   const handleSend = useCallback(
     async (query: string) => {
+      // useChat is single-instance; refuse sends while any stream is in flight.
+      if (statusRef.current === "submitted" || statusRef.current === "streaming") {
+        return;
+      }
       clearError();
       setStage(null);
       setLiveResearchSteps([]);
@@ -273,6 +362,8 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
       setEgoNames([]);
       setEgoDocIds([]);
       setShowEgoPanel(true);
+      setViewMessages(null);
+      streamOwnerThreadIdRef.current = threadId;
       await sendMessage({
         text: query,
         metadata: {
@@ -290,8 +381,13 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
     [sendMessage, threadId, mode, clearError, sessionFiles]
   );
 
-  const handleStop = useCallback(() => {
-    void stop();
+  /** Explicit Stop only — thread switches must not call this. */
+  const handleStop = useCallback(async () => {
+    try {
+      await stop();
+    } catch {
+      /* ignore */
+    }
     setStage(null);
   }, [stop]);
 
@@ -306,12 +402,20 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
   );
 
   const startNewThread = useCallback(
-    (nextMode: "chat" | "research") => {
-      void stop();
+    async (nextMode: "chat" | "research") => {
+      const busy =
+        statusRef.current === "submitted" || statusRef.current === "streaming";
+      // Detach from in-flight stream; do not abort (useChat is single-instance —
+      // sending on the new thread stays blocked until the background stream ends).
+      if (busy) {
+        setViewMessages([]);
+      } else {
+        setViewMessages(null);
+        setMessages([]);
+      }
       setMode(nextMode);
       setThreadId(null);
       setThreadMeta(null);
-      setMessages([]);
       setLiveResearchSteps([]);
       setLiveArtifacts(new Map());
       setSessionFiles([]);
@@ -320,11 +424,44 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
       clearError();
       router.replace("/");
     },
-    [router, setMessages, stop, clearError]
+    [router, setMessages, clearError]
   );
 
   const onPickThread = (t: Thread) => {
-    void stop();
+    if (t.id === threadIdRef.current && viewMessages === null) return;
+    const busy =
+      statusRef.current === "submitted" || statusRef.current === "streaming";
+    const owner = streamOwnerThreadIdRef.current;
+
+    // Re-attach to the thread that still owns the live stream.
+    if (busy && owner === t.id) {
+      setViewMessages(null);
+      setLiveResearchSteps([]);
+      setLiveArtifacts(new Map());
+      setActiveArtifact(null);
+      setStage(null);
+      clearError();
+      setThreadId(t.id);
+      router.replace(`/?thread=${t.id}`);
+      return;
+    }
+
+    // Leave an in-flight stream running; park useChat.messages and load the target.
+    // owner may be null before data-ack for a brand-new thread.
+    if (busy && owner !== t.id) {
+      setViewMessages([]); // filled by threadId effect from API
+      setLiveResearchSteps([]);
+      setLiveArtifacts(new Map());
+      setActiveArtifact(null);
+      setStage(null);
+      clearError();
+      setThreadId(t.id);
+      router.replace(`/?thread=${t.id}`);
+      return;
+    }
+
+    // Idle switch: clear then let the effect hydrate from API.
+    setViewMessages(null);
     setMessages([]);
     setLiveResearchSteps([]);
     setLiveArtifacts(new Map());
@@ -360,159 +497,242 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
 
   // Prefer live streaming artifact for canvas display
   const canvasArtifact = useMemo(() => {
+    if (viewMessages !== null) {
+      const fromMsgs = getArtifactsFromMessages(displayMessages);
+      return activeArtifact || fromMsgs.at(-1) || null;
+    }
     if (activeArtifact) {
       const live = liveArtifacts.get(activeArtifact.id);
       return live || activeArtifact;
     }
     const fromLive = Array.from(liveArtifacts.values()).at(-1);
     if (fromLive) return fromLive;
-    const fromMsgs = getArtifactsFromMessages(messages);
+    const fromMsgs = getArtifactsFromMessages(displayMessages);
     return fromMsgs.at(-1) || null;
-  }, [activeArtifact, liveArtifacts, messages]);
+  }, [activeArtifact, liveArtifacts, displayMessages, viewMessages]);
 
-  const showCanvas = Boolean(canvasArtifact && activeArtifact);
+  const showCanvas = Boolean(canvasArtifact && activeArtifact && viewMessages === null);
 
   // 从最新助手消息补齐引用文档（流式结束后或历史会话）
   useEffect(() => {
-    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+    const lastAssistant = [...displayMessages].reverse().find((m) => m.role === "assistant");
     if (!lastAssistant) return;
     const cites = getMessageCitations(lastAssistant);
     const ids = cites.map((c) => String(c.doc_id || "").trim()).filter(Boolean);
     if (ids.length) {
       setEgoDocIds((prev) => Array.from(new Set([...prev, ...ids])));
     }
-  }, [messages]);
+  }, [displayMessages]);
 
   const showEgo = showEgoPanel && !showCanvas && mode === "chat";
+  const isDesktop = useIsLg();
+
+  const panelIds = useMemo(
+    () => (showEgo ? ["threads", "chat", "ego"] : ["threads", "chat"]),
+    [showEgo]
+  );
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: showEgo ? "redship-workspace-ego" : "redship-workspace",
+    panelIds,
+    storage: typeof window !== "undefined" ? localStorage : undefined,
+  });
 
   const activeTitle =
     threadMeta?.title || (mode === "research" ? "新的深度研究" : "新的快速问答");
-  const visibleMessageCount = messages.length;
+  const visibleMessageCount = displayMessages.length;
+
+  const chatMain = (
+    <div className="panel flex h-full min-h-0 flex-col p-1.5 md:p-2">
+      <header className="flex shrink-0 items-center gap-2 border-b border-crimson-100/80 px-1.5 py-1">
+        <h2 className="min-w-0 flex-1 truncate text-xs font-semibold text-ink" title={activeTitle}>
+          {activeTitle}
+        </h2>
+        <p className="hidden shrink-0 text-[10px] text-muted sm:block">
+          {mode === "research" ? "深度研究" : "快速问答"} · {visibleMessageCount}
+          {sessionFiles.length > 0 ? ` · ${sessionFiles.length} 附件` : ""}
+          {stage && isBusy ? ` · ${stage}` : ""}
+        </p>
+        {isBusy || backgroundBusy ? (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-crimson-50 px-1.5 py-0.5 text-[10px] text-crimson-800">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {isBusy ? "生成中" : "后台"}
+          </span>
+        ) : (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted">
+            {mode === "research" ? (
+              <Sparkles className="h-3 w-3 text-crimson-700" />
+            ) : (
+              <MessageSquare className="h-3 w-3 text-crimson-700" />
+            )}
+            {mode === "research" ? "研究" : "问答"}
+          </span>
+        )}
+      </header>
+
+      <ResearchProgress
+        steps={researchSteps}
+        loading={isBusy}
+        stage={isBusy ? stage : null}
+        compact
+        title={mode === "research" ? "深度研究进度" : "处理进度"}
+      />
+
+      {/* Messages scroll under a floating composer; pb clears the bar. */}
+      <div className="relative mt-1.5 min-h-0 flex-1">
+        <div className="h-full overflow-y-auto scroll-pretty pr-1 pb-[4.75rem] sm:pb-[5.25rem]">
+          {displayMessages.length === 0 && !isBusy ? (
+            <EmptyState
+              mode={mode}
+              hasFiles={sessionFiles.length > 0}
+              onSelectPrompt={handleSend}
+            />
+          ) : (
+            <MessageList
+              messages={displayMessages}
+              status={isBusy ? status : "ready"}
+              error={isBusy || viewMessages === null ? error : undefined}
+              mode={mode}
+              threadId={threadMeta?.id || threadId}
+              onCitationClick={handleCitationClick}
+              onDismissError={clearError}
+              onOpenArtifact={handleOpenArtifact}
+            />
+          )}
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-card from-40% via-card/85 to-transparent px-0.5 pb-[max(0.2rem,env(safe-area-inset-bottom))] pt-4">
+          <div className="pointer-events-auto mx-auto w-full max-w-4xl">
+            <Composer
+              mode={mode}
+              onModeChange={setMode}
+              threadId={threadMeta?.id || threadId}
+              loading={isBusy}
+              backgroundBusy={backgroundBusy}
+              onSend={handleSend}
+              onStop={handleStop}
+              onEnsureThread={ensureThread}
+              sessionFiles={sessionFiles}
+              onFilesChange={setSessionFiles}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const threadListProps = {
+    threads,
+    activeId: threadId,
+    onPick: onPickThread,
+    onNewChat: () => startNewThread("chat"),
+    onNewResearch: () => startNewThread("research"),
+    onChange: reloadThreads,
+  };
+
+  const sepClass =
+    "w-1.5 rounded-full bg-border transition-colors hover:bg-crimson-300 outline-none";
 
   return (
     <main className="min-h-screen p-2 md:p-3">
-      <div className="flex min-h-[calc(100vh-1rem)] items-start gap-3">
-        <ThreadList
-          threads={threads}
-          activeId={threadId}
-          onPick={onPickThread}
-          onNewChat={() => startNewThread("chat")}
-          onNewResearch={() => startNewThread("research")}
-          onChange={reloadThreads}
-        />
-
-        <section className="flex min-h-[calc(100vh-1rem)] min-w-0 flex-1 flex-col">
-          <div className="panel flex min-h-[calc(100vh-1rem)] flex-col p-3 md:p-4">
-            <header className="rounded-2xl border border-crimson-100 bg-card p-4">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-crimson-700">
-                    研究工作台
-                  </p>
-                  <h2 className="mt-1 truncate text-2xl font-semibold text-ink">
-                    {activeTitle}
-                  </h2>
-                  <p className="mt-2 text-sm text-muted">
-                    {mode === "research" ? "深度研究" : "快速问答"} · {visibleMessageCount} 条消息
-                    {sessionFiles.length > 0 ? ` · ${sessionFiles.length} 个附件` : ""}
-                    {stage ? ` · ${stage}` : ""}
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="chip">
-                    {mode === "research" ? (
-                      <Sparkles className="h-3.5 w-3.5" />
-                    ) : (
-                      <MessageSquare className="h-3.5 w-3.5" />
-                    )}
-                    {mode === "research" ? "深度研究" : "快速问答"}
-                  </span>
-                  {isBusy ? (
-                    <span className="chip">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      生成中
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            </header>
-
-            <ResearchProgress
-              steps={researchSteps}
-              loading={isBusy}
-              stage={stage}
-              compact
-              title={mode === "research" ? "深度研究进度" : "处理进度"}
-            />
-
-            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1 scroll-pretty">
-              {messages.length === 0 && !isBusy ? (
-                <EmptyState mode={mode} hasFiles={sessionFiles.length > 0} />
-              ) : (
-                <MessageList
-                  messages={messages}
-                  status={status}
-                  error={error}
-                  mode={mode}
-                  threadId={threadMeta?.id || threadId}
-                  onCitationClick={handleCitationClick}
-                  onDismissError={clearError}
-                  onOpenArtifact={handleOpenArtifact}
-                />
-              )}
-            </div>
-
-            <div className="mt-4">
-              <Composer
-                mode={mode}
-                onModeChange={setMode}
-                threadId={threadMeta?.id || threadId}
-                loading={isBusy}
-                onSend={handleSend}
-                onStop={handleStop}
-                onEnsureThread={ensureThread}
-                sessionFiles={sessionFiles}
-                onFilesChange={setSessionFiles}
-              />
-            </div>
-          </div>
-        </section>
-
-        {showCanvas ? (
-          <>
-            <ResearchCanvas
-              artifact={canvasArtifact}
-              onClose={() => setActiveArtifact(null)}
-              variant="panel"
-            />
-            <ResearchCanvas
-              artifact={canvasArtifact}
-              onClose={() => setActiveArtifact(null)}
-              variant="drawer"
-            />
-          </>
-        ) : showEgo ? (
-          <>
-            <ChatKnowledgeGraph
-              names={egoNames}
-              docIds={egoDocIds}
-              onClose={() => setShowEgoPanel(false)}
-              variant="panel"
-            />
+      {isDesktop ? (
+        <div className="h-[calc(100vh-1rem)]">
+          <Group
+            id={showEgo ? "redship-workspace-ego" : "redship-workspace"}
+            orientation="horizontal"
+            className="h-full w-full"
+            defaultLayout={defaultLayout}
+            onLayoutChanged={onLayoutChanged}
+          >
+            <Panel
+              id="threads"
+              defaultSize="18%"
+              minSize={160}
+              maxSize={360}
+              className="min-w-0"
+            >
+              <ThreadList {...threadListProps} fillContainer />
+            </Panel>
+            <Separator className={sepClass} />
+            <Panel
+              id="chat"
+              defaultSize={showEgo ? "50%" : "78%"}
+              minSize={360}
+              className="min-w-0"
+            >
+              {chatMain}
+            </Panel>
+            {showEgo ? (
+              <>
+                <Separator className={sepClass} />
+                <Panel id="ego" defaultSize="28%" minSize={240} maxSize={480} className="min-w-0">
+                  <ChatKnowledgeGraph
+                    names={egoNames}
+                    docIds={egoDocIds}
+                    onClose={() => setShowEgoPanel(false)}
+                    variant="panel"
+                  />
+                </Panel>
+              </>
+            ) : null}
+          </Group>
+        </div>
+      ) : (
+        <div className="flex min-h-[calc(100vh-1rem)] items-start gap-3">
+          <ThreadList {...threadListProps} />
+          <section className="flex min-h-[calc(100vh-1rem)] min-w-0 flex-1 flex-col">
+            {chatMain}
+          </section>
+          {showEgo ? (
             <ChatKnowledgeGraph
               names={egoNames}
               docIds={egoDocIds}
               onClose={() => setShowEgoPanel(false)}
               variant="drawer"
             />
-          </>
-        ) : null}
-      </div>
+          ) : null}
+        </div>
+      )}
+
+      {showCanvas ? (
+        <>
+          <ResearchCanvas
+            artifact={canvasArtifact}
+            onClose={() => setActiveArtifact(null)}
+            variant="panel"
+          />
+          <ResearchCanvas
+            artifact={canvasArtifact}
+            onClose={() => setActiveArtifact(null)}
+            variant="drawer"
+          />
+        </>
+      ) : null}
     </main>
   );
 }
 
-function EmptyState({ mode, hasFiles }: { mode: "chat" | "research"; hasFiles: boolean }) {
+/** Tailwind `lg` = 1024px；仅挂载一套主栏，避免双份 Composer/消息列表。 */
+function useIsLg() {
+  const [isLg, setIsLg] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = () => setIsLg(mq.matches);
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return isLg;
+}
+
+function EmptyState({
+  mode,
+  hasFiles,
+  onSelectPrompt,
+}: {
+  mode: "chat" | "research";
+  hasFiles: boolean;
+  onSelectPrompt: (query: string) => void;
+}) {
   const samples =
     mode === "chat"
       ? hasFiles
@@ -547,12 +767,14 @@ function EmptyState({ mode, hasFiles }: { mode: "chat" | "research"; hasFiles: b
       </p>
       <div className="grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-3">
         {samples.map((s) => (
-          <div
+          <button
             key={s}
+            type="button"
+            onClick={() => onSelectPrompt(s)}
             className="rounded-2xl border border-border bg-card p-3 text-left text-sm shadow-soft transition hover:border-crimson-200 hover:shadow"
           >
             {s}
-          </div>
+          </button>
         ))}
       </div>
     </div>

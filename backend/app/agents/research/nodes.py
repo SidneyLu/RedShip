@@ -391,7 +391,9 @@ async def writer_stream(
         if c.get("url"):
             header += f" url={c['url']}"
         body = c.get("content") or c.get("snippet") or ""
-        evidence_block_parts.append(f"{header}\n{body}")
+        evidence_block_parts.append(
+            f"{header}\n引用标签用 ({c['ordinal']})，链接 id 用 {c['id']}\n{body}"
+        )
     evidence_block = "\n\n".join(evidence_block_parts) or "（无可用证据）"
 
     user_payload = (

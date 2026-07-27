@@ -124,7 +124,7 @@ class Thread(Base, TimestampMixin):
 
 
 class Message(Base, TimestampMixin):
-    """单条消息；assistant 的 citations / research_events 由 chat 流结束后持久化。"""
+    """单条消息；assistant 在流结束或客户端中断时持久化（中断时可带 incomplete 标记）。"""
 
     __tablename__ = "messages"
 

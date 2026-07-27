@@ -30,6 +30,8 @@ interface Props {
   onNewChat: () => void;
   onNewResearch: () => void;
   onChange: () => void;
+  /** 填满父级 Panel（桌面分栏）；默认侧栏固定宽 */
+  fillContainer?: boolean;
 }
 
 export function ThreadList({
@@ -39,6 +41,7 @@ export function ThreadList({
   onNewChat,
   onNewResearch,
   onChange,
+  fillContainer = false,
 }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
@@ -115,9 +118,21 @@ export function ThreadList({
 
       <aside
         className={cn(
-          "panel fixed inset-y-2 left-2 z-40 flex min-h-0 w-[86vw] max-w-[320px] flex-col transition-[transform,width,padding,opacity] duration-200 md:sticky md:top-2 md:z-10 md:h-[calc(100vh-1rem)] md:max-w-none md:self-start",
-          mobileOpen ? "translate-x-0 opacity-100" : "-translate-x-[120%] opacity-0 md:translate-x-0 md:opacity-100",
-          collapsed ? "md:w-[72px] md:items-center md:gap-2 md:px-2 md:py-3" : "gap-3 p-3 md:w-[280px]"
+          "panel flex min-h-0 flex-col transition-[transform,width,padding,opacity] duration-200",
+          fillContainer
+            ? "h-full w-full max-w-none"
+            : "fixed inset-y-2 left-2 z-40 w-[86vw] max-w-[320px] md:sticky md:top-2 md:z-10 md:h-[calc(100vh-1rem)] md:max-w-none md:self-start",
+          !fillContainer &&
+            (mobileOpen
+              ? "translate-x-0 opacity-100"
+              : "-translate-x-[120%] opacity-0 md:translate-x-0 md:opacity-100"),
+          fillContainer
+            ? collapsed
+              ? "items-center gap-2 px-2 py-3"
+              : "gap-3 p-3"
+            : collapsed
+              ? "md:w-[72px] md:items-center md:gap-2 md:px-2 md:py-3"
+              : "gap-3 p-3 md:w-[280px]"
         )}
       >
         {collapsed ? (
@@ -131,11 +146,11 @@ export function ThreadList({
             <div className="flex items-start justify-between gap-3">
               <Link
                 href="/"
-                className="min-w-0 flex-1 rounded-xl bg-gradient-to-br from-crimson-700 to-crimson-500 p-3 text-white shadow-soft"
+                className="min-w-0 flex-1 rounded-xl bg-gradient-to-br from-crimson-700 to-crimson-500 px-2.5 py-2 text-white shadow-soft"
               >
-                <p className="text-xs tracking-[0.2em] text-crimson-100">RedShip Studio</p>
-                <h1 className="mt-1 text-base font-bold leading-snug md:text-lg">日新册</h1>
-                <p className="mt-1 text-xs text-crimson-100">南开大学党史 RAG 智能体</p>
+                <p className="text-[10px] tracking-[0.18em] text-crimson-100">RedShip Studio</p>
+                <h1 className="mt-0.5 text-sm font-bold leading-snug md:text-base">日新册</h1>
+                <p className="mt-0.5 text-[10px] text-crimson-100">南开大学党史 RAG 智能体</p>
               </Link>
               <button
                 type="button"

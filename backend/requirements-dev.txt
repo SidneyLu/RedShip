@@ -1,0 +1,10 @@
+# Dev / test dependencies (install: pip install -r requirements-dev.txt)
+# Prefer lightweight host install for unit/integration; full app deps live in requirements.txt
+-r requirements.txt
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0
+anyio==4.7.0
+# Explicit DB drivers for host-side integration (also pulled via requirements.txt)
+asyncpg==0.30.0
+psycopg[binary]==3.2.3

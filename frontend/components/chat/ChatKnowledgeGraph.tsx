@@ -102,12 +102,15 @@ export function ChatKnowledgeGraph({
       {error ? (
         <div className="p-4 text-sm text-crimson-700">{error}</div>
       ) : (
-        <KnowledgeGraphView
-          compact
-          data={data}
-          height={variant === "drawer" ? 360 : "calc(100vh - 8rem)"}
-          emptyHint="提问后显示相关知识子图（人物、机构、引用文献）"
-        />
+        <div className={cn(variant === "panel" && "min-h-0 flex-1")}>
+          <KnowledgeGraphView
+            compact
+            data={data}
+            height={variant === "drawer" ? 360 : "100%"}
+            emptyHint="提问后显示相关知识子图（人物、机构、引用文献）"
+            className={variant === "panel" ? "h-full border-0 shadow-none" : undefined}
+          />
+        </div>
       )}
     </>
   );
@@ -116,7 +119,7 @@ export function ChatKnowledgeGraph({
     return (
       <div
         className={cn(
-          "fixed inset-x-0 bottom-0 z-40 max-h-[70vh] overflow-hidden rounded-t-2xl border border-border bg-card shadow-soft md:hidden",
+          "fixed inset-x-0 bottom-0 z-40 max-h-[70vh] overflow-hidden rounded-t-2xl border border-border bg-card shadow-soft lg:hidden",
           className
         )}
       >
@@ -128,7 +131,7 @@ export function ChatKnowledgeGraph({
   return (
     <aside
       className={cn(
-        "hidden w-[min(380px,32vw)] shrink-0 overflow-hidden rounded-2xl border border-border bg-card shadow-soft md:flex md:flex-col",
+        "flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-soft",
         className
       )}
     >

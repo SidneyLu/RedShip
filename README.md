@@ -253,6 +253,45 @@ docker compose up -d
 - **记忆**：会话摘要存 `Thread.extra_metadata`；用户记忆表 `user_memories` + Milvus `user_memory`
 - **语料隔离**：管理员 `knowledge_base` vs 会话 `session_chunks` vs 用户记忆 `user_memory`
 
+## 测试
+
+仓库提供三层测试：单元（无服务）、集成（本机 Postgres `redship_test` + mock LLM/Milvus）、系统（已启动的 Docker Compose）。
+
+### 后端（pytest）
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+
+# 单元：不依赖 Docker
+pytest -m unit
+
+# 集成：需本机可连 Postgres（例如只起 compose 的 postgres，端口 5432）
+# 首次会自动创建库 redship_test
+pytest -m integration
+
+# 系统：需完整 compose，backend 监听 :8005
+pytest -m system
+```
+
+环境变量（可选）：`TEST_POSTGRES_HOST`（默认 `localhost`）、`E2E_ADMIN_EMAIL` / `E2E_ADMIN_PASSWORD`（默认读 `.env` 的 bootstrap）、`SYSTEM_API_BASE`（默认 `http://localhost:8005`）。
+
+### 前端（Vitest + Playwright）
+
+```bash
+cd frontend
+npm install
+
+# 单元 / 组件
+npm test
+
+# 系统 E2E：需 frontend :8006（及后端）已由 compose 启动
+npx playwright install chromium
+npm run test:e2e
+```
+
+凭证同样使用 `E2E_ADMIN_*` 或根目录 `.env` 中的 `ADMIN_BOOTSTRAP_*`。Compose 未启动时系统测试会自动 skip。
+
 ## 详细设计
 
 请参阅 [`PLAN.md`](PLAN.md) 获取架构图、Milvus Schema、SSE 事件格式与实施阶段说明。

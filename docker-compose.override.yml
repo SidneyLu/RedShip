@@ -22,7 +22,7 @@ services:
       dockerfile: Dockerfile
       target: builder
       args:
-        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8005}
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-}
     volumes:
       - ./frontend/app:/app/app
       - ./frontend/components:/app/components
@@ -32,4 +32,7 @@ services:
       - ./frontend/postcss.config.mjs:/app/postcss.config.mjs
       - ./frontend/next.config.mjs:/app/next.config.mjs
       - ./frontend/tsconfig.json:/app/tsconfig.json
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-}
+      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://backend:8005}
     command: ["npm", "run", "dev"]

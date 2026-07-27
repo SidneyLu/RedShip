@@ -328,7 +328,10 @@ def _build_evidence_prompt(citations: list[dict[str, Any]]) -> str:
         )
         if c.get("url"):
             body += f"\n来源链接: {c['url']}"
-        blocks.append(f"{head}\n{body}")
+        # Make the ordinal vs id distinction explicit for the model.
+        blocks.append(
+            f"{head}\n引用标签用 ({c['ordinal']})，链接 id 用 {c['id']}\n{body}"
+        )
     return "\n\n".join(blocks)
 
 

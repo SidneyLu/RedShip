@@ -1,8 +1,8 @@
 "use client";
 
-/** 输入框与发送：模式切换、附件上传、会话文档面板。 */
+/** 输入框与发送：模式切换、附件上传、会话文档面板；闲置时单行折叠。 */
 
-import { KeyboardEvent, useCallback, useRef, useState } from "react";
+import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Send, Square, Sparkles, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FileAttachment, removeSessionFile } from "./FileAttachment";
@@ -14,8 +14,10 @@ interface Props {
   mode: "chat" | "research";
   onModeChange: (mode: "chat" | "research") => void;
   threadId: string | null;
-  /** true when useChat status is submitted | streaming */
+  /** true when this view owns an in-flight stream (show Stop) */
   loading: boolean;
+  /** true when another thread is still streaming (block send, no Stop here) */
+  backgroundBusy?: boolean;
   onSend: (query: string) => void;
   onStop: () => void;
   onFilesChange?: (files: SessionFileItem[]) => void;
@@ -23,11 +25,15 @@ interface Props {
   sessionFiles?: SessionFileItem[];
 }
 
+const TEXTAREA_MAX_PX = 120;
+const TEXTAREA_COLLAPSED_PX = 34;
+
 export function Composer({
   mode,
   onModeChange,
   threadId,
   loading,
+  backgroundBusy = false,
   onSend,
   onStop,
   onFilesChange,
@@ -35,9 +41,27 @@ export function Composer({
   sessionFiles = [],
 }: Props) {
   const [value, setValue] = useState("");
-  const [docsOpen, setDocsOpen] = useState(true);
+  const [docsOpen, setDocsOpen] = useState(false);
+  const [focused, setFocused] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const { show } = useToast();
+  const sendBlocked = loading || backgroundBusy;
+  const expanded = focused || value.trim().length > 0;
+
+  const resizeTextarea = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    if (!expanded) {
+      el.style.height = `${TEXTAREA_COLLAPSED_PX}px`;
+      return;
+    }
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 52), TEXTAREA_MAX_PX)}px`;
+  }, [expanded]);
+
+  useEffect(() => {
+    resizeTextarea();
+  }, [expanded, resizeTextarea]);
 
   const handleFilesChange = useCallback(
     (files: SessionFileItem[]) => {
@@ -64,8 +88,15 @@ export function Composer({
 
   const submit = () => {
     const trimmed = value.trim();
-    if (!trimmed || loading) return;
+    if (!trimmed || sendBlocked) return;
     setValue("");
+    setFocused(false);
+    requestAnimationFrame(() => {
+      if (ref.current) {
+        ref.current.style.height = `${TEXTAREA_COLLAPSED_PX}px`;
+        ref.current.blur();
+      }
+    });
     onSend(trimmed);
   };
 
@@ -74,94 +105,152 @@ export function Composer({
       e.preventDefault();
       submit();
     }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (!value.trim()) {
+        setFocused(false);
+        ref.current?.blur();
+      }
+    }
   };
 
+  const modeToggle = (
+    <div className="inline-flex shrink-0 rounded-md border border-border bg-canvas/40 p-0.5">
+      <button
+        type="button"
+        onClick={() => onModeChange("chat")}
+        className={cn(
+          "inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium transition",
+          mode === "chat" ? "bg-crimson-600 text-white shadow" : "text-muted hover:text-crimson-700"
+        )}
+        title="快速问答"
+      >
+        <MessageSquare className="h-3 w-3" />
+        <span className={cn(!expanded && "sr-only sm:not-sr-only")}>问答</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => onModeChange("research")}
+        className={cn(
+          "inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium transition",
+          mode === "research" ? "bg-crimson-600 text-white shadow" : "text-muted hover:text-crimson-700"
+        )}
+        title="深度研究"
+      >
+        <Sparkles className="h-3 w-3" />
+        <span className={cn(!expanded && "sr-only sm:not-sr-only")}>研究</span>
+      </button>
+    </div>
+  );
+
+  const actionButtons = (
+    <div className="flex shrink-0 items-center gap-1">
+      {loading ? (
+        <button type="button" onClick={onStop} className="btn-outline px-2 py-1 text-[10px]">
+          <Square className="h-3 w-3" />
+          终止
+        </button>
+      ) : null}
+      <button
+        type="button"
+        onClick={submit}
+        disabled={sendBlocked || !value.trim()}
+        className="btn-primary px-2 py-1 text-[10px]"
+      >
+        <Send className="h-3 w-3" />
+        {mode === "research" ? "研究" : "发送"}
+      </button>
+    </div>
+  );
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-1">
       <SessionDocsPanel
         files={sessionFiles}
         open={docsOpen}
         onOpenChange={setDocsOpen}
         onRemove={handleRemove}
       />
-      <div className="panel-elev space-y-3 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="inline-flex rounded-xl border border-border bg-canvas/40 p-1">
-            <button
-              type="button"
-              onClick={() => onModeChange("chat")}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-lg px-3 py-1 text-xs font-medium transition",
-                mode === "chat"
-                  ? "bg-crimson-600 text-white shadow"
-                  : "text-muted hover:text-crimson-700"
-              )}
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              快速问答
-            </button>
-            <button
-              type="button"
-              onClick={() => onModeChange("research")}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-lg px-3 py-1 text-xs font-medium transition",
-                mode === "research"
-                  ? "bg-crimson-600 text-white shadow"
-                  : "text-muted hover:text-crimson-700"
-              )}
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              深度研究
-            </button>
+      <div
+        className={cn(
+          "panel-elev shadow-lg ring-1 ring-crimson-100/60 transition-all",
+          expanded ? "space-y-1.5 p-2" : "flex items-center gap-1.5 p-1.5"
+        )}
+      >
+        {expanded ? (
+          <div className="flex flex-wrap items-center justify-between gap-1">
+            {modeToggle}
+            <FileAttachment
+              threadId={threadId}
+              files={sessionFiles}
+              onChange={handleFilesChange}
+              onEnsureThread={onEnsureThread}
+              onOpenPanel={() => setDocsOpen(true)}
+            />
           </div>
-          <FileAttachment
-            threadId={threadId}
-            files={sessionFiles}
-            onChange={handleFilesChange}
-            onEnsureThread={onEnsureThread}
-            onOpenPanel={() => setDocsOpen(true)}
-          />
-        </div>
+        ) : (
+          modeToggle
+        )}
+
         <textarea
           ref={ref}
-          className="textarea min-h-[110px] resize-none"
+          rows={1}
+          className={cn(
+            "textarea resize-none text-sm leading-5 transition-[min-height,height,padding]",
+            expanded
+              ? "min-h-[52px] max-h-[120px] w-full rounded-lg px-2.5 py-2"
+              : "h-[34px] min-h-[34px] max-h-[34px] flex-1 overflow-hidden rounded-md px-2 py-1.5"
+          )}
           placeholder={
-            mode === "chat"
-              ? sessionFiles.length > 0
-                ? "基于已上传文档提问，或要求撰写报告 / 纪要 / 摘要…"
-                : "向「日新册」提问，例如：遵义会议的主要决议有哪些？"
-              : sessionFiles.length > 0
-                ? "基于会话附件启动深度研究，并生成可导出报告…"
-                : "输入需要深度研究的问题，将自动规划、检索、反思并撰写报告..."
+            expanded
+              ? mode === "chat"
+                ? sessionFiles.length > 0
+                  ? "基于已上传文档提问，或要求撰写报告 / 纪要 / 摘要…"
+                  : "向「日新册」提问…"
+                : sessionFiles.length > 0
+                  ? "基于会话附件启动深度研究…"
+                  : "输入深度研究问题…"
+              : mode === "chat"
+                ? "提问…"
+                : "输入研究问题…"
           }
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            requestAnimationFrame(resizeTextarea);
+          }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            // Delay so send/mode clicks still register before collapse.
+            window.setTimeout(() => {
+              if (document.activeElement === ref.current) return;
+              if (!ref.current?.value.trim()) setFocused(false);
+            }, 120);
+          }}
           onKeyDown={onKeyDown}
         />
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-xs text-muted">
-            {mode === "chat"
-              ? "回车发送 · Shift+回车换行 · 快速 RAG 模式"
-              : "回车发送 · 多轮联网检索 + 反思 + 报告生成"}
+
+        {expanded ? (
+          <div className="flex items-center justify-between gap-2">
+            <div className="hidden min-w-0 truncate text-[10px] text-muted sm:block">
+              {backgroundBusy
+                ? "另一会话仍在生成中"
+                : "回车发送 · Esc 收起 · Shift+回车换行"}
+            </div>
+            {actionButtons}
           </div>
-          <div className="flex items-center gap-2">
-            {loading ? (
-              <button type="button" onClick={onStop} className="btn-outline">
-                <Square className="h-4 w-4" />
-                终止
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={submit}
-              disabled={loading || !value.trim()}
-              className="btn-primary"
-            >
-              <Send className="h-4 w-4" />
-              {mode === "research" ? "启动研究" : "发送"}
-            </button>
-          </div>
-        </div>
+        ) : (
+          <>
+            <FileAttachment
+              threadId={threadId}
+              files={sessionFiles}
+              onChange={handleFilesChange}
+              onEnsureThread={onEnsureThread}
+              onOpenPanel={() => setDocsOpen(true)}
+            />
+            {actionButtons}
+          </>
+        )}
       </div>
     </div>
   );
