@@ -388,7 +388,7 @@ async def _get_document_source_or_stream(
     return _probe_source(doc, document_id)
 
 
-@router.get("/documents/{document_id}/source")
+@router.get("/documents/{document_id}/source", response_model=None)
 async def get_document_source(
     document_id: str, request: Request, user: CurrentUser, session: DbSession
 ) -> DocumentSourceOut | FileResponse | JSONResponse:
@@ -401,7 +401,7 @@ async def get_document_source(
     return await _get_document_source_or_stream(request, document_id, session)
 
 
-@router.get("/documents/{document_id}/original")
+@router.get("/documents/{document_id}/original", response_model=None)
 async def get_document_original(
     document_id: str, request: Request, user: CurrentUser, session: DbSession
 ) -> DocumentSourceOut | FileResponse | JSONResponse:
@@ -409,7 +409,7 @@ async def get_document_original(
     return await _get_document_source_or_stream(request, document_id, session)
 
 
-@router.get("/documents/{document_id}/source/file")
+@router.get("/documents/{document_id}/source/file", response_model=None)
 async def get_document_source_file(
     document_id: str, user: CurrentUser, session: DbSession
 ) -> FileResponse | JSONResponse:
@@ -417,7 +417,7 @@ async def get_document_source_file(
     return await _stream_document_source_pdf(session, document_id)
 
 
-@router.get("/documents/{document_id}/original/file")
+@router.get("/documents/{document_id}/original/file", response_model=None)
 async def get_document_original_file(
     document_id: str, user: CurrentUser, session: DbSession
 ) -> FileResponse | JSONResponse:
@@ -425,7 +425,7 @@ async def get_document_original_file(
     return await _stream_document_source_pdf(session, document_id)
 
 
-@router.get("/documents/{document_id}/pdf")
+@router.get("/documents/{document_id}/pdf", response_model=None)
 async def get_document_pdf(
     document_id: str, user: CurrentUser, session: DbSession
 ) -> FileResponse | JSONResponse:

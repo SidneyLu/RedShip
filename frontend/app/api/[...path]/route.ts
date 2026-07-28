@@ -23,6 +23,9 @@ const HOP_BY_HOP = new Set([
   "upgrade",
   "host",
   "content-length",
+  // Node/undici fetch rejects Expect: 100-continue ("expect header not supported"),
+  // which PowerShell / some clients send on POST → fake "Backend unreachable".
+  "expect",
 ]);
 
 function backendBase(): string {
@@ -38,8 +41,10 @@ async function proxy(req: NextRequest, pathSegments: string[]) {
     if (HOP_BY_HOP.has(key.toLowerCase())) return;
     headers.set(key, value);
   });
+  headers.delete("expect");
+  headers.delete("Expect");
 
-  const init: RequestInit & { duplex?: "half" } = {
+  const init: RequestInit = {
     method: req.method,
     headers,
     redirect: "manual",
@@ -47,9 +52,10 @@ async function proxy(req: NextRequest, pathSegments: string[]) {
   };
 
   if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = req.body;
-    // Required by Node fetch when forwarding a streaming request body.
-    init.duplex = "half";
+    // Buffer the body. Streaming + duplex:"half" is flaky in Node/undici inside
+    // Next.js and surfaces as "Backend unreachable: fetch failed" on login POSTs.
+    // Response streaming (SSE) is unaffected — we still forward upstream.body.
+    init.body = await req.arrayBuffer();
   }
 
   let upstream: Response;
@@ -57,8 +63,17 @@ async function proxy(req: NextRequest, pathSegments: string[]) {
     upstream = await fetch(target, init);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const cause =
+      err instanceof Error && err.cause instanceof Error
+        ? err.cause.message
+        : err instanceof Error && err.cause
+          ? String(err.cause)
+          : "";
+    console.error("[api-proxy] fetch failed", { target, message, cause });
     return Response.json(
-      { detail: `Backend unreachable: ${message}` },
+      {
+        detail: `Backend unreachable: ${message}${cause ? ` (${cause})` : ""}`,
+      },
       { status: 502 }
     );
   }
