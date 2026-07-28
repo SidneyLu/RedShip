@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type ChatStatus } from "ai";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
-import { Loader2, MessageSquare, Sparkles } from "lucide-react";
+import { Loader2, MessageSquare, Sparkles, LayoutDashboard } from "lucide-react";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ResearchProgress } from "./ResearchProgress";
@@ -29,11 +29,13 @@ import {
   getArtifactsFromMessages,
   getMessageCitations,
   getResearchStepsFromMessages,
+  normalizeArtifactPart,
   toUIMessages,
   type ArtifactPart,
   type RedShipUIMessage,
   type ResearchStep,
 } from "@/lib/chat-types";
+import type { ResearchBoardTab } from "./ResearchCanvas";
 
 interface ChatInterfaceProps {
   initialThreadId?: string | null;
@@ -57,6 +59,8 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
   const [sessionFiles, setSessionFiles] = useState<SessionFileItem[]>([]);
   const [activeArtifact, setActiveArtifact] = useState<ArtifactPart | null>(null);
   const [liveArtifacts, setLiveArtifacts] = useState<Map<string, ArtifactPart>>(new Map());
+  const [boardOpen, setBoardOpen] = useState(false);
+  const [boardTab, setBoardTab] = useState<ResearchBoardTab>("evidence");
   const [egoNames, setEgoNames] = useState<string[]>([]);
   const [egoDocIds, setEgoDocIds] = useState<string[]>([]);
   const [showEgoPanel, setShowEgoPanel] = useState(true);
@@ -197,22 +201,29 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
           ...prev,
           { ...dataPart.data, timestamp: Date.now() },
         ]);
+        if (modeRef.current === "research") {
+          setBoardOpen(true);
+        }
         return;
       }
       if (dataPart.type === "data-artifact" && dataPart.data?.id) {
-        const art: ArtifactPart = {
+        const art = normalizeArtifactPart({
           id: dataPart.data.id,
-          title: dataPart.data.title || "可视化",
-          language: "html",
+          title: dataPart.data.title,
+          language: dataPart.data.language,
+          format: dataPart.data.format,
           code: dataPart.data.code || "",
+          viz: dataPart.data.viz,
           status: dataPart.data.status === "streaming" ? "streaming" : "done",
-        };
+        });
         setLiveArtifacts((prev) => {
           const next = new Map(prev);
           next.set(art.id, art);
           return next;
         });
         setActiveArtifact(art);
+        setBoardTab("figures");
+        setBoardOpen(true);
       }
     },
     onFinish: async ({ isAbort, isError, message }) => {
@@ -316,6 +327,7 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
           setLiveArtifacts(new Map());
           setStage(null);
           setActiveArtifact(null);
+          setBoardOpen(false);
           clearError();
           return;
         }
@@ -324,6 +336,8 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
         setLiveResearchSteps([]);
         setLiveArtifacts(new Map());
         setStage(null);
+        setActiveArtifact(null);
+        setBoardOpen(false);
         clearError();
       })
       .catch(() => {
@@ -363,6 +377,9 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
       setEgoNames([]);
       setEgoDocIds([]);
       setShowEgoPanel(true);
+      setActiveArtifact(null);
+      setBoardOpen(mode === "research");
+      setBoardTab("evidence");
       setViewMessages(null);
       streamOwnerThreadIdRef.current = threadId;
       await sendMessage({
@@ -493,26 +510,34 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
   }, [threadId, mode, router, reloadThreads, setMessages]);
 
   const handleOpenArtifact = useCallback((art: ArtifactPart) => {
-    setActiveArtifact(art);
+    const normalized = normalizeArtifactPart(art);
+    setActiveArtifact(normalized);
+    setLiveArtifacts((prev) => {
+      const next = new Map(prev);
+      next.set(normalized.id, normalized);
+      return next;
+    });
+    setBoardTab("figures");
+    setBoardOpen(true);
   }, []);
 
-  // Prefer live streaming artifact for canvas display
-  const canvasArtifact = useMemo(() => {
-    if (viewMessages !== null) {
-      const fromMsgs = getArtifactsFromMessages(displayMessages);
-      return activeArtifact || fromMsgs.at(-1) || null;
+  const boardArtifacts = useMemo(() => {
+    const byId = new Map<string, ArtifactPart>();
+    for (const a of getArtifactsFromMessages(displayMessages)) {
+      byId.set(a.id, a);
     }
-    if (activeArtifact) {
-      const live = liveArtifacts.get(activeArtifact.id);
-      return live || activeArtifact;
+    for (const a of liveArtifacts.values()) {
+      byId.set(a.id, a);
     }
-    const fromLive = Array.from(liveArtifacts.values()).at(-1);
-    if (fromLive) return fromLive;
-    const fromMsgs = getArtifactsFromMessages(displayMessages);
-    return fromMsgs.at(-1) || null;
-  }, [activeArtifact, liveArtifacts, displayMessages, viewMessages]);
+    return Array.from(byId.values());
+  }, [displayMessages, liveArtifacts]);
 
-  const showCanvas = Boolean(canvasArtifact && activeArtifact && viewMessages === null);
+  const boardCitations = useMemo(() => {
+    const lastAssistant = [...displayMessages].reverse().find((m) => m.role === "assistant");
+    return lastAssistant ? getMessageCitations(lastAssistant) : [];
+  }, [displayMessages]);
+
+  const showCanvas = Boolean(boardOpen && viewMessages === null);
 
   // 从最新助手消息补齐引用文档（流式结束后或历史会话）
   useEffect(() => {
@@ -548,6 +573,21 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
         <h2 className="min-w-0 flex-1 truncate text-xs font-semibold text-ink" title={activeTitle}>
           {activeTitle}
         </h2>
+        {(mode === "research" || boardArtifacts.length > 0 || researchSteps.length > 0) &&
+        !showCanvas ? (
+          <button
+            type="button"
+            onClick={() => {
+              setBoardTab(boardArtifacts.length ? "figures" : "evidence");
+              setBoardOpen(true);
+            }}
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-crimson-200 bg-crimson-50 px-2 py-0.5 text-[10px] text-crimson-800 hover:bg-crimson-100"
+            title="打开研究工作台"
+          >
+            <LayoutDashboard className="h-3 w-3" />
+            工作台
+          </button>
+        ) : null}
         <p className="hidden shrink-0 text-[10px] text-muted sm:block">
           {mode === "research" ? "深度研究" : "快速问答"} · {visibleMessageCount}
           {sessionFiles.length > 0 ? ` · ${sessionFiles.length} 附件` : ""}
@@ -697,13 +737,55 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
       {showCanvas ? (
         <>
           <ResearchCanvas
-            artifact={canvasArtifact}
-            onClose={() => setActiveArtifact(null)}
+            artifacts={boardArtifacts}
+            activeArtifactId={activeArtifact?.id}
+            onSelectArtifact={(id) => {
+              const art = boardArtifacts.find((a) => a.id === id);
+              if (art) setActiveArtifact(art);
+            }}
+            researchSteps={researchSteps}
+            citations={boardCitations}
+            egoNames={egoNames}
+            egoDocIds={egoDocIds}
+            tab={boardTab}
+            onTabChange={setBoardTab}
+            onCitationClick={(citation) => {
+              const lastAssistant = [...displayMessages]
+                .reverse()
+                .find((m) => m.role === "assistant");
+              if (lastAssistant) handleCitationClick(citation, lastAssistant);
+            }}
+            onClose={() => {
+              setBoardOpen(false);
+              setActiveArtifact(null);
+            }}
+            streaming={isBusy && mode === "research"}
             variant="panel"
           />
           <ResearchCanvas
-            artifact={canvasArtifact}
-            onClose={() => setActiveArtifact(null)}
+            artifacts={boardArtifacts}
+            activeArtifactId={activeArtifact?.id}
+            onSelectArtifact={(id) => {
+              const art = boardArtifacts.find((a) => a.id === id);
+              if (art) setActiveArtifact(art);
+            }}
+            researchSteps={researchSteps}
+            citations={boardCitations}
+            egoNames={egoNames}
+            egoDocIds={egoDocIds}
+            tab={boardTab}
+            onTabChange={setBoardTab}
+            onCitationClick={(citation) => {
+              const lastAssistant = [...displayMessages]
+                .reverse()
+                .find((m) => m.role === "assistant");
+              if (lastAssistant) handleCitationClick(citation, lastAssistant);
+            }}
+            onClose={() => {
+              setBoardOpen(false);
+              setActiveArtifact(null);
+            }}
+            streaming={isBusy && mode === "research"}
             variant="drawer"
           />
         </>

@@ -180,11 +180,24 @@ export interface MessageAttachment {
   chunks_count?: number;
 }
 
+export type VizKind = "echarts" | "timeline" | "network";
+
+export interface VizSpec {
+  title?: string;
+  kind: VizKind;
+  option?: Record<string, unknown>;
+  items?: Array<Record<string, unknown>>;
+  nodes?: Array<Record<string, unknown>>;
+  links?: Array<Record<string, unknown>>;
+}
+
 export interface MessageArtifact {
   id: string;
   title: string;
-  language: "html";
+  language: "html" | "json";
+  format?: "html" | "viz";
   code: string;
+  viz?: VizSpec | null;
   status?: "streaming" | "done";
 }
 

@@ -160,13 +160,19 @@ class UIMessageStreamEncoder:
 
         if etype == "artifact":
             art_id = str(ev.get("id") or "artifact")
-            data = {
+            fmt = str(ev.get("format") or ("viz" if ev.get("viz") else "html")).lower()
+            if fmt not in {"html", "viz"}:
+                fmt = "html"
+            data: dict[str, Any] = {
                 "id": art_id,
-                "title": ev.get("title") or "可视化",
-                "language": ev.get("language") or "html",
+                "title": ev.get("title") or ("附图" if fmt == "viz" else "可视化"),
+                "format": fmt,
+                "language": ev.get("language") or ("json" if fmt == "viz" else "html"),
                 "code": ev.get("code") or "",
                 "status": ev.get("status") or "done",
             }
+            if isinstance(ev.get("viz"), dict):
+                data["viz"] = ev["viz"]
             return [
                 format_sse(
                     {

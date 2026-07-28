@@ -3,7 +3,13 @@
  */
 
 import type { UIMessage } from "ai";
-import type { Citation, Message, MessageArtifact, MessageAttachment } from "@/lib/api";
+import type {
+  Citation,
+  Message,
+  MessageArtifact,
+  MessageAttachment,
+  VizSpec,
+} from "@/lib/api";
 
 /** research_step payload (stream data part + ResearchProgress). */
 export interface ResearchStep {
@@ -23,6 +29,8 @@ export interface ResearchStep {
   need_more?: boolean;
   new_extracts?: number;
   total_extracts?: number;
+  session_hits?: number;
+  kb_hits?: number;
   timestamp?: number;
 }
 
@@ -35,10 +43,30 @@ export type RedShipMessageMetadata = {
 export type ArtifactPart = {
   id: string;
   title: string;
-  language: "html";
+  language: "html" | "json";
+  format: "html" | "viz";
   code: string;
+  viz?: VizSpec | null;
   status: "streaming" | "done";
 };
+
+export function normalizeArtifactPart(
+  raw: Partial<ArtifactPart> & { id: string }
+): ArtifactPart {
+  const format: "html" | "viz" =
+    raw.format === "viz" || raw.language === "json" || Boolean(raw.viz)
+      ? "viz"
+      : "html";
+  return {
+    id: raw.id,
+    title: raw.title || (format === "viz" ? "附图" : "可视化"),
+    language: format === "viz" ? "json" : "html",
+    format,
+    code: raw.code || "",
+    viz: raw.viz ?? null,
+    status: raw.status === "streaming" ? "streaming" : "done",
+  };
+}
 
 export type RedShipDataParts = {
   ack: {
@@ -107,13 +135,7 @@ export function getMessageArtifacts(message: RedShipUIMessage): ArtifactPart[] {
   const byId = new Map<string, ArtifactPart>();
   for (const part of message.parts) {
     if (part.type === "data-artifact" && part.data?.id) {
-      byId.set(part.data.id, {
-        id: part.data.id,
-        title: part.data.title || "可视化",
-        language: "html",
-        code: part.data.code || "",
-        status: part.data.status === "streaming" ? "streaming" : "done",
-      });
+      byId.set(part.data.id, normalizeArtifactPart(part.data));
     }
   }
   return Array.from(byId.values());
@@ -180,17 +202,22 @@ export function dbMessageToUIMessage(m: Message): RedShipUIMessage {
 
   if (m.role === "assistant" && Array.isArray(m.artifacts)) {
     (m.artifacts as MessageArtifact[]).forEach((a) => {
-      if (!a?.id || !a.code) return;
+      if (!a?.id) return;
+      // viz may omit code if only viz object persisted; require code or viz
+      if (!a.code && !a.viz) return;
+      const normalized = normalizeArtifactPart({
+        id: a.id,
+        title: a.title,
+        language: a.language,
+        format: a.format,
+        code: a.code || (a.viz ? JSON.stringify(a.viz) : ""),
+        viz: a.viz,
+        status: "done",
+      });
       parts.push({
         type: "data-artifact",
         id: a.id,
-        data: {
-          id: a.id,
-          title: a.title || "可视化",
-          language: "html",
-          code: a.code,
-          status: "done",
-        },
+        data: normalized,
       });
     });
   }

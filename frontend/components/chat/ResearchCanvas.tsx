@@ -1,43 +1,38 @@
 "use client";
 
-/** 深度研究可视化沙箱：iframe 隔离渲染；桌面为可拖动/缩放浮动窗。 */
+/**
+ * 深度研究工作台：报告附图 | 证据来源 | 实体关系。
+ * 桌面为可拖动/缩放浮动窗；移动端为抽屉。
+ */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { X, Code2, LayoutDashboard, AlertTriangle } from "lucide-react";
+import {
+  X,
+  LayoutDashboard,
+  BarChart3,
+  Library,
+  Network,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ArtifactPart } from "@/lib/chat-types";
+import type { Citation } from "@/lib/api";
+import type { ArtifactPart, ResearchStep } from "@/lib/chat-types";
+import { ReportFiguresPanel } from "./research-board/ReportFiguresPanel";
+import { EvidencePanel } from "./research-board/EvidencePanel";
+import { EntitiesPanel } from "./research-board/EntitiesPanel";
 
-const MAX_CODE_BYTES = 200 * 1024;
 const GEOM_KEY = "redship.canvas.geom";
-const MIN_W = 320;
-const MIN_H = 280;
+const MIN_W = 360;
+const MIN_H = 320;
 
 type Geom = { x: number; y: number; w: number; h: number };
-
-function wrapSrcDoc(code: string): string {
-  const trimmed = code.trim();
-  if (/<!DOCTYPE html>/i.test(trimmed) || /<html[\s>]/i.test(trimmed)) {
-    return trimmed;
-  }
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<style>
-  body { margin: 0; padding: 12px; font-family: "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif; color: #1a1a1a; background: #fff; }
-</style>
-</head>
-<body>${trimmed}</body>
-</html>`;
-}
+export type ResearchBoardTab = "figures" | "evidence" | "entities";
 
 function defaultGeom(): Geom {
   if (typeof window === "undefined") {
-    return { x: 40, y: 40, w: 420, h: 520 };
+    return { x: 40, y: 40, w: 480, h: 560 };
   }
-  const w = Math.min(420, Math.round(window.innerWidth * 0.4));
-  const h = Math.min(640, Math.round(window.innerHeight * 0.7));
+  const w = Math.min(520, Math.round(window.innerWidth * 0.42));
+  const h = Math.min(680, Math.round(window.innerHeight * 0.75));
   const x = Math.max(8, window.innerWidth - w - 16);
   const y = 16;
   return { x, y, w, h };
@@ -82,17 +77,51 @@ function saveGeom(g: Geom) {
 }
 
 interface Props {
-  artifact: ArtifactPart | null;
+  artifacts: ArtifactPart[];
+  activeArtifactId?: string | null;
+  onSelectArtifact?: (id: string) => void;
+  researchSteps?: ResearchStep[];
+  citations?: Citation[];
+  egoNames?: string[];
+  egoDocIds?: string[];
+  tab?: ResearchBoardTab;
+  onTabChange?: (tab: ResearchBoardTab) => void;
+  onCitationClick?: (citation: Citation) => void;
   onClose: () => void;
   className?: string;
-  /** 移动端抽屉样式 */
   variant?: "panel" | "drawer";
+  streaming?: boolean;
 }
 
-export function ResearchCanvas({ artifact, onClose, className, variant = "panel" }: Props) {
-  const [showSource, setShowSource] = useState(false);
-  const [renderError, setRenderError] = useState(false);
-  const [srcDoc, setSrcDoc] = useState("");
+const TABS: { id: ResearchBoardTab; label: string; icon: typeof BarChart3 }[] = [
+  { id: "figures", label: "报告附图", icon: BarChart3 },
+  { id: "evidence", label: "证据来源", icon: Library },
+  { id: "entities", label: "实体关系", icon: Network },
+];
+
+export function ResearchCanvas({
+  artifacts,
+  activeArtifactId,
+  onSelectArtifact,
+  researchSteps = [],
+  citations = [],
+  egoNames = [],
+  egoDocIds = [],
+  tab: controlledTab,
+  onTabChange,
+  onCitationClick,
+  onClose,
+  className,
+  variant = "panel",
+  streaming = false,
+}: Props) {
+  const [internalTab, setInternalTab] = useState<ResearchBoardTab>("evidence");
+  const tab = controlledTab ?? internalTab;
+  const setTab = (next: ResearchBoardTab) => {
+    onTabChange?.(next);
+    if (controlledTab === undefined) setInternalTab(next);
+  };
+
   const [geom, setGeom] = useState<Geom>(() =>
     typeof window === "undefined" ? defaultGeom() : loadGeom()
   );
@@ -103,25 +132,6 @@ export function ResearchCanvas({ artifact, onClose, className, variant = "panel"
     startY: number;
     orig: Geom;
   } | null>(null);
-
-  const tooLarge = useMemo(() => {
-    if (!artifact?.code) return false;
-    return new TextEncoder().encode(artifact.code).length > MAX_CODE_BYTES;
-  }, [artifact?.code]);
-
-  useEffect(() => {
-    setRenderError(false);
-    setShowSource(false);
-    if (!artifact?.code || tooLarge) {
-      setSrcDoc("");
-      return;
-    }
-    const delay = artifact.status === "streaming" ? 400 : 0;
-    const t = window.setTimeout(() => {
-      setSrcDoc(wrapSrcDoc(artifact.code));
-    }, delay);
-    return () => window.clearTimeout(t);
-  }, [artifact?.id, artifact?.code, artifact?.status, tooLarge]);
 
   useEffect(() => {
     const onResize = () => setGeom((g) => clampGeom(g));
@@ -174,7 +184,21 @@ export function ResearchCanvas({ artifact, onClose, className, variant = "panel"
     };
     setDragging(true);
   };
-  if (!artifact) return null;
+
+  const subtitle = useMemo(() => {
+    if (tab === "figures") {
+      const n = artifacts.length;
+      return n ? `${n} 个附图` : "等待报告附图";
+    }
+    if (tab === "evidence") {
+      return citations.length
+        ? `${citations.length} 条引用`
+        : `${researchSteps.length} 个步骤`;
+    }
+    return egoNames.length || egoDocIds.length
+      ? `${egoNames.length} 实体 · ${egoDocIds.length} 文献`
+      : "等待实体种子";
+  }, [tab, artifacts.length, citations.length, researchSteps.length, egoNames.length, egoDocIds.length]);
 
   const body = (
     <>
@@ -191,11 +215,11 @@ export function ResearchCanvas({ artifact, onClose, className, variant = "panel"
         <div className="min-w-0">
           <p className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-crimson-700">
             <LayoutDashboard className="h-3 w-3" />
-            研究画布
-            {artifact.status === "streaming" ? " · 生成中" : ""}
+            研究工作台
+            {streaming ? " · 进行中" : ""}
             {variant === "panel" ? " · 可拖动" : ""}
           </p>
-          <h3 className="mt-1 truncate text-sm font-semibold text-ink">{artifact.title}</h3>
+          <h3 className="mt-1 truncate text-sm font-semibold text-ink">{subtitle}</h3>
         </div>
         <div
           className="flex shrink-0 items-center gap-1"
@@ -203,55 +227,59 @@ export function ResearchCanvas({ artifact, onClose, className, variant = "panel"
         >
           <button
             type="button"
-            onClick={() => setShowSource((v) => !v)}
-            className="rounded-lg p-1.5 text-muted hover:bg-crimson-50 hover:text-crimson-800"
-            title="查看源码"
-          >
-            <Code2 className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
             onClick={onClose}
             className="rounded-lg p-1.5 text-muted hover:bg-crimson-50 hover:text-crimson-800"
-            aria-label="关闭画布"
+            aria-label="关闭工作台"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
       </header>
 
-      {tooLarge ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted">
-          <AlertTriangle className="h-5 w-5 text-crimson-600" />
-          可视化代码过大（超过 200KB），已跳过沙箱渲染。
-          <button type="button" className="text-crimson-700 underline" onClick={() => setShowSource(true)}>
-            查看源码
+      <nav
+        className="flex shrink-0 gap-0.5 border-b border-border px-2 py-1"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        {TABS.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setTab(id)}
+            className={cn(
+              "inline-flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors",
+              tab === id
+                ? "bg-crimson-50 text-crimson-800"
+                : "text-muted hover:bg-canvas hover:text-ink"
+            )}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {label}
           </button>
-        </div>
-      ) : showSource ? (
-        <pre className="min-h-0 flex-1 overflow-auto bg-ink/95 p-3 text-[11px] leading-5 text-canvas">
-          {artifact.code}
-        </pre>
-      ) : renderError ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted">
-          <AlertTriangle className="h-5 w-5 text-crimson-600" />
-          可视化渲染失败
-          <button type="button" className="text-crimson-700 underline" onClick={() => setShowSource(true)}>
-            查看源码
-          </button>
-        </div>
-      ) : (
-        <iframe
-          title={artifact.title}
-          sandbox="allow-scripts"
-          srcDoc={srcDoc}
-          className={cn(
-            "min-h-0 w-full flex-1 border-0 bg-white",
-            dragging && "pointer-events-none"
-          )}
-          onError={() => setRenderError(true)}
-        />
-      )}
+        ))}
+      </nav>
+
+      <div
+        className={cn("flex min-h-0 flex-1 flex-col", dragging && "pointer-events-none")}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        {tab === "figures" ? (
+          <ReportFiguresPanel
+            artifacts={artifacts}
+            activeId={activeArtifactId}
+            onSelect={onSelectArtifact}
+          />
+        ) : null}
+        {tab === "evidence" ? (
+          <EvidencePanel
+            steps={researchSteps}
+            citations={citations}
+            onCitationClick={onCitationClick}
+          />
+        ) : null}
+        {tab === "entities" ? (
+          <EntitiesPanel names={egoNames} docIds={egoDocIds} />
+        ) : null}
+      </div>
     </>
   );
 

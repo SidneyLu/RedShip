@@ -2,7 +2,7 @@
 
 /**
  * 渲染助手 Markdown；将内嵌引用链接转为 CitationChip。
- * artifact-html 围栏渲染为「在画布打开」卡片，不在气泡内执行。
+ * artifact-html / artifact-viz 围栏渲染为「在画布打开」卡片，不在气泡内执行。
  */
 
 import { useMemo } from "react";
@@ -18,14 +18,24 @@ import {
   normalizeCitationMarkdown,
 } from "@/lib/citation-labels";
 import { cn } from "@/lib/utils";
-import type { ArtifactPart } from "@/lib/chat-types";
+import { normalizeArtifactPart, type ArtifactPart } from "@/lib/chat-types";
 
-const ARTIFACT_FENCE_RE =
+const ARTIFACT_HTML_RE =
   /```artifact-html\s*\n(?:<!--\s*title:\s*(.+?)\s*-->\s*\n)?([\s\S]*?)```/gi;
+const ARTIFACT_VIZ_RE = /```artifact-viz\s*\n([\s\S]*?)```/gi;
 
 function extractTitleFromCode(code: string, fallback: string): string {
   const m = /<!--\s*title:\s*(.+?)\s*-->/i.exec(code);
   return (m?.[1] || fallback).trim() || fallback;
+}
+
+function titleFromVizCode(code: string, fallback: string): string {
+  try {
+    const parsed = JSON.parse(code) as { title?: string };
+    return (parsed.title || fallback).trim() || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export function MarkdownMessage({
@@ -52,22 +62,49 @@ export function MarkdownMessage({
       threadId,
       messageId,
     });
-    const displayMd = normalized.replace(
-      ARTIFACT_FENCE_RE,
+    let displayMd = normalized.replace(
+      ARTIFACT_HTML_RE,
       (_full, titleGroup: string, code: string) => {
         i += 1;
         const id = `md-artifact-${i}`;
-        const title = (titleGroup || extractTitleFromCode(code, `可视化 ${i}`)).trim();
-        map.set(id, {
+        map.set(
           id,
-          title,
-          language: "html",
-          code: code.trim(),
-          status: "done",
-        });
+          normalizeArtifactPart({
+            id,
+            title: (titleGroup || extractTitleFromCode(code, `可视化 ${i}`)).trim(),
+            language: "html",
+            format: "html",
+            code: code.trim(),
+            status: "done",
+          })
+        );
         return `\n\n[[ARTIFACT:${id}]]\n\n`;
       }
     );
+    displayMd = displayMd.replace(ARTIFACT_VIZ_RE, (_full, code: string) => {
+      i += 1;
+      const id = `md-artifact-${i}`;
+      const trimmed = String(code || "").trim();
+      let viz = null as ArtifactPart["viz"];
+      try {
+        viz = JSON.parse(trimmed);
+      } catch {
+        viz = null;
+      }
+      map.set(
+        id,
+        normalizeArtifactPart({
+          id,
+          title: titleFromVizCode(trimmed, `附图 ${i}`),
+          language: "json",
+          format: "viz",
+          code: trimmed,
+          viz,
+          status: "done",
+        })
+      );
+      return `\n\n[[ARTIFACT:${id}]]\n\n`;
+    });
     return { display: displayMd, placeholders: map };
   }, [content, citations, threadId, messageId]);
 
@@ -130,15 +167,28 @@ export function MarkdownMessage({
         },
         code({ className: codeClass, children, ...rest }) {
           const lang = /language-([\w-]+)/.exec(codeClass || "")?.[1];
-          if (lang === "artifact-html") {
+          if (lang === "artifact-html" || lang === "artifact-viz") {
             const code = String(children || "").replace(/\n$/, "");
-            const art: ArtifactPart = {
+            const isViz = lang === "artifact-viz";
+            let viz = null as ArtifactPart["viz"];
+            if (isViz) {
+              try {
+                viz = JSON.parse(code);
+              } catch {
+                viz = null;
+              }
+            }
+            const art = normalizeArtifactPart({
               id: `code-${code.slice(0, 12).replace(/\W/g, "")}`,
-              title: extractTitleFromCode(code, "可视化"),
-              language: "html",
+              title: isViz
+                ? titleFromVizCode(code, "附图")
+                : extractTitleFromCode(code, "可视化"),
+              language: isViz ? "json" : "html",
+              format: isViz ? "viz" : "html",
               code,
+              viz,
               status: "done",
-            };
+            });
             return (
               <button
                 type="button"
