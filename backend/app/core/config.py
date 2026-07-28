@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     mineru_ocr: bool = Field(default=True, alias="MINERU_OCR")
     vision_model: str = Field(default="qwen3.5-flash", alias="VISION_MODEL")  # Build
     vision_pdf_enabled: bool = Field(default=False, alias="VISION_PDF_ENABLED")
-    vision_pdf_dpi: int = Field(default=144, alias="VISION_PDF_DPI")
+    vision_pdf_dpi: int = Field(default=300, alias="VISION_PDF_DPI")
     vision_pdf_max_pages: int = Field(default=50, alias="VISION_PDF_MAX_PAGES")
     vision_review_threshold: float = Field(default=0.6, alias="VISION_REVIEW_THRESHOLD")
 

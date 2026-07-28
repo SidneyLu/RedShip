@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/knowledge/documents", label: "文献" },
   { href: "/knowledge/build", label: "构建" },
   { href: "/knowledge/graph", label: "图谱" },
+  { href: "/demo/vision-wenshi", label: "VL Demo" },
 ];
 
 export function KnowledgeNav() {

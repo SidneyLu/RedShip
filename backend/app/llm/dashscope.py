@@ -720,6 +720,7 @@ class DashScopeClient:
             "坐标 bbox 使用 0–1000 归一化（相对页宽高）。"
             "页眉页脚用 pageheader/pagefooter；正文用 text；标题用 sectionheader。"
             "尽量完整保留文字，勿编造。"
+            "文字一律使用简体中文；若原文为繁体，请转换为简体后再写入 text 字段。"
         )
         messages = [
             {
