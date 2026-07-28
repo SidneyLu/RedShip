@@ -697,7 +697,13 @@ class DashScopeClient:
                 raise DashScopeAPIError("describe_image returned empty content")
         raise RuntimeError("describe_image unreachable")
 
-    async def extract_page_layout(self, path: str | Path, *, page: int = 1) -> str:
+    async def extract_page_layout(
+        self,
+        path: str | Path,
+        *,
+        page: int = 1,
+        extra_hint: str | None = None,
+    ) -> str:
         """VL layout extraction: OCR text blocks with 0–1000 bboxes as JSON text.
 
         Uses ``settings.vision_model`` (default qwen3.5-flash).
@@ -718,10 +724,14 @@ class DashScopeClient:
             '{"blocks":[{"type":"text|sectionheader|pagefooter|pageheader",'
             '"text":"...","bbox":[x0,y0,x1,y1]}]}\n'
             "坐标 bbox 使用 0–1000 归一化（相对页宽高）。"
+            "每个块必须给出紧贴文字的 bbox，禁止用整页 [0,0,1000,1000]。"
+            "标题、作者、小节标题、正文段落、页码要分成多个块，各自独立 bbox。"
             "页眉页脚用 pageheader/pagefooter；正文用 text；标题用 sectionheader。"
             "尽量完整保留文字，勿编造。"
             "文字一律使用简体中文；若原文为繁体，请转换为简体后再写入 text 字段。"
         )
+        if extra_hint:
+            prompt = prompt + str(extra_hint)
         messages = [
             {
                 "role": "user",

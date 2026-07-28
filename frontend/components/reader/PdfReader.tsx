@@ -4,9 +4,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getApiBase, getToken, apiClientHeaders } from "@/lib/api";
+import { isDegenerateBbox } from "@/lib/ocrBbox";
+import { ocrBlockColor } from "@/lib/ocrBlockColors";
 import { cn } from "@/lib/utils";
 
-export type PdfRect = { page: number; bbox: number[] };
+export type PdfRect = { page: number; bbox: number[]; type?: string };
+
+export type LayoutOverlayBlock = {
+  bbox: number[];
+  type?: string;
+  id?: string;
+};
 
 interface Props {
   /** Knowledge-base document id (fetches /api/knowledge/documents/{id}/source/file). */
@@ -17,7 +25,14 @@ interface Props {
   /** When set, disables next beyond this page. */
   pageCount?: number;
   onPageChange?: (page: number) => void;
+  /** Legacy highlight rects (filtered by page). */
   rects?: PdfRect[];
+  /** Current-page OCR blocks to overlay (0–1000 bbox). */
+  layoutBlocks?: LayoutOverlayBlock[];
+  activeBlockIndex?: number | null;
+  onBlockClick?: (index: number) => void;
+  /** Hide built-in pager when parent owns Prev/Next. */
+  hidePager?: boolean;
   highlightText?: string | null;
   className?: string;
 }
@@ -29,6 +44,10 @@ export function PdfReader({
   pageCount,
   onPageChange,
   rects = [],
+  layoutBlocks,
+  activeBlockIndex = null,
+  onBlockClick,
+  hidePager = false,
   highlightText,
   className,
 }: Props) {
@@ -63,7 +82,6 @@ export function PdfReader({
     onPageChange?.(capped);
   };
 
-  // Resolve PDF bytes URL (static path or authenticated blob)
   useEffect(() => {
     if (!ready) return;
     let cancelled = false;
@@ -120,7 +138,6 @@ export function PdfReader({
     };
   }, [documentId, pdfUrl, ready]);
 
-  // Load PDF document once source URL is ready
   useEffect(() => {
     if (!ready || !sourceUrl) return;
     let cancelled = false;
@@ -158,7 +175,6 @@ export function PdfReader({
     };
   }, [sourceUrl, ready]);
 
-  // Render current page to canvas
   useEffect(() => {
     if (!ready || !pdfRef.current || !canvasRef.current) return;
     let cancelled = false;
@@ -206,6 +222,13 @@ export function PdfReader({
     };
   }, [currentPage, docPages, sourceUrl, ready]);
 
+  const overlayFromLayout = useMemo(() => {
+    if (!layoutBlocks?.length) return [] as Array<LayoutOverlayBlock & { index: number }>;
+    return layoutBlocks
+      .map((b, index) => ({ ...b, index }))
+      .filter((b) => Array.isArray(b.bbox) && b.bbox.length >= 4 && !isDegenerateBbox(b.bbox));
+  }, [layoutBlocks]);
+
   const pageRects = useMemo(
     () =>
       rects.filter(
@@ -214,39 +237,42 @@ export function PdfReader({
     [rects, currentPage]
   );
 
+  const useLayoutOverlay = overlayFromLayout.length > 0;
   const atLast = effectiveCount > 0 ? currentPage >= effectiveCount : false;
   const showLoading = !ready || (!sourceUrl && !error) || (sourceUrl && docPages === 0 && !error);
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 text-sm">
-        <button
-          type="button"
-          className="btn-ghost px-2 py-1 text-xs"
-          disabled={currentPage <= 1 || showLoading}
-          onClick={() => goTo(currentPage - 1)}
-        >
-          上一页
-        </button>
-        <span className="text-muted">
-          第 {currentPage} 页
-          {effectiveCount > 0 ? ` / ${effectiveCount}` : ""}
-          {rendering ? " · 渲染中" : ""}
-        </span>
-        <button
-          type="button"
-          className="btn-ghost px-2 py-1 text-xs"
-          disabled={atLast || showLoading}
-          onClick={() => goTo(currentPage + 1)}
-        >
-          下一页
-        </button>
-        {highlightText ? (
-          <span className="ml-auto max-w-[40%] truncate text-xs text-muted" title={highlightText}>
-            高亮：{highlightText}
+      {!hidePager ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 text-sm">
+          <button
+            type="button"
+            className="btn-ghost px-2 py-1 text-xs"
+            disabled={currentPage <= 1 || showLoading}
+            onClick={() => goTo(currentPage - 1)}
+          >
+            上一页
+          </button>
+          <span className="text-muted">
+            第 {currentPage} 页
+            {effectiveCount > 0 ? ` / ${effectiveCount}` : ""}
+            {rendering ? " · 渲染中" : ""}
           </span>
-        ) : null}
-      </div>
+          <button
+            type="button"
+            className="btn-ghost px-2 py-1 text-xs"
+            disabled={atLast || showLoading}
+            onClick={() => goTo(currentPage + 1)}
+          >
+            下一页
+          </button>
+          {highlightText ? (
+            <span className="ml-auto max-w-[40%] truncate text-xs text-muted" title={highlightText}>
+              高亮：{highlightText}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {error ? (
         <div className="flex flex-1 items-center justify-center p-6 text-sm text-crimson-700">
@@ -258,7 +284,40 @@ export function PdfReader({
         <div ref={containerRef} className="relative min-h-0 flex-1 overflow-auto bg-canvas">
           <div className="relative mx-auto w-fit p-3">
             <canvas ref={canvasRef} className="block max-w-full shadow-sm" />
-            {pageRects.length > 0 ? (
+            {useLayoutOverlay ? (
+              <div className="absolute inset-3">
+                {overlayFromLayout.map((b) => {
+                  const [x0, y0, x1, y1] = b.bbox;
+                  const left = (x0 / 1000) * 100;
+                  const top = (y0 / 1000) * 100;
+                  const width = ((x1 - x0) / 1000) * 100;
+                  const height = ((y1 - y0) / 1000) * 100;
+                  const color = ocrBlockColor(b.type);
+                  const active = activeBlockIndex === b.index;
+                  return (
+                    <button
+                      key={b.id || b.index}
+                      type="button"
+                      title={b.type || "block"}
+                      aria-label={`OCR block ${b.index + 1}`}
+                      onClick={() => onBlockClick?.(b.index)}
+                      className={cn(
+                        "absolute rounded-sm transition",
+                        active ? "z-10 ring-2 ring-offset-1 ring-crimson-500" : "z-0"
+                      )}
+                      style={{
+                        left: `${left}%`,
+                        top: `${top}%`,
+                        width: `${Math.max(width, 0.5)}%`,
+                        height: `${Math.max(height, 0.5)}%`,
+                        backgroundColor: color.fill,
+                        border: `${active ? 2 : 1}px solid ${color.border}`,
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            ) : pageRects.length > 0 ? (
               <div className="pointer-events-none absolute inset-3">
                 {pageRects.map((r, i) => {
                   const [x0, y0, x1, y1] = r.bbox;
@@ -266,15 +325,18 @@ export function PdfReader({
                   const top = (y0 / 1000) * 100;
                   const width = ((x1 - x0) / 1000) * 100;
                   const height = ((y1 - y0) / 1000) * 100;
+                  const color = ocrBlockColor(r.type);
                   return (
                     <div
                       key={i}
-                      className="absolute rounded-sm border border-crimson-500/70 bg-crimson-400/25"
+                      className="absolute rounded-sm"
                       style={{
                         left: `${left}%`,
                         top: `${top}%`,
                         width: `${Math.max(width, 0.5)}%`,
                         height: `${Math.max(height, 0.5)}%`,
+                        backgroundColor: color.fill,
+                        border: `1px solid ${color.border}`,
                       }}
                     />
                   );

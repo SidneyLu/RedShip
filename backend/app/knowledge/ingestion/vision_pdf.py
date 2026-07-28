@@ -49,6 +49,55 @@ def _normalize_bbox(raw: Any) -> list[float] | None:
     return [max(0.0, min(1000.0, v)) for v in vals]
 
 
+def _bbox_area(bbox: list[float]) -> float:
+    return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
+
+
+def _is_degenerate_bbox(bbox: list[float]) -> bool:
+    if len(bbox) < 4:
+        return True
+    return _bbox_area(bbox) >= 0.85 * 1000.0 * 1000.0 or _bbox_area(bbox) < 1.0
+
+
+def _repair_page_blocks(blocks: list[LayoutBlock], page: int) -> list[LayoutBlock]:
+    """If most boxes on a page are full-page/empty, stack estimated rects by reading order."""
+    if not blocks:
+        return blocks
+    bad = sum(1 for b in blocks if _is_degenerate_bbox(b.bbox))
+    if bad < max(1, (len(blocks) + 1) // 2):
+        return blocks
+
+    logger.warning(
+        "Page {}: {}/{} blocks have degenerate bbox; estimating vertical stack",
+        page,
+        bad,
+        len(blocks),
+    )
+    margin_x, margin_y, gap = 70.0, 55.0, 10.0
+    usable = 1000.0 - margin_y * 2 - gap * max(0, len(blocks) - 1)
+    weights: list[float] = []
+    for b in blocks:
+        lines = max(1, b.text.count("\n") + 1)
+        chars = max(8, len("".join(b.text.split())))
+        weights.append(max(1.0, lines * 1.2 + chars / 36.0))
+    total_w = sum(weights) or 1.0
+    y = margin_y
+    fixed: list[LayoutBlock] = []
+    for b, w in zip(blocks, weights):
+        h = max(22.0, (w / total_w) * usable)
+        y1 = min(1000.0 - margin_y, y + h)
+        fixed.append(
+            LayoutBlock(
+                type=b.type,
+                text=b.text,
+                bbox=[margin_x, y, 1000.0 - margin_x, y1],
+                page=b.page,
+            )
+        )
+        y = y1 + gap
+    return fixed
+
+
 def _parse_blocks_payload(payload: Any, page: int) -> list[LayoutBlock]:
     blocks_raw: list[Any] = []
     if isinstance(payload, dict):
@@ -65,7 +114,8 @@ def _parse_blocks_payload(payload: Any, page: int) -> list[LayoutBlock]:
         btype = str(item.get("type") or "text").strip().lower() or "text"
         bbox = _normalize_bbox(item.get("bbox") or item.get("box") or item.get("rect"))
         if not bbox:
-            bbox = [0.0, 0.0, 1000.0, 1000.0]
+            # Placeholder; repaired per-page after parse (avoid full-page wash).
+            bbox = [0.0, 0.0, 0.0, 0.0]
         out.append(LayoutBlock(type=btype, text=text, bbox=bbox, page=page))
     return out
 
@@ -73,7 +123,7 @@ def _parse_blocks_payload(payload: Any, page: int) -> list[LayoutBlock]:
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 
 
-def parse_layout_json_text(text: str, page: int) -> list[LayoutBlock]:
+def parse_layout_json_text(text: str, page: int, *, repair: bool = True) -> list[LayoutBlock]:
     raw = (text or "").strip()
     if not raw:
         return []
@@ -94,7 +144,8 @@ def parse_layout_json_text(text: str, page: int) -> list[LayoutBlock]:
                 return []
         else:
             return []
-    return _parse_blocks_payload(payload, page)
+    blocks = _parse_blocks_payload(payload, page)
+    return _repair_page_blocks(blocks, page) if repair else blocks
 
 
 def render_pdf_pages(pdf_path: Path, out_dir: Path, *, dpi: int, max_pages: int) -> list[Path]:

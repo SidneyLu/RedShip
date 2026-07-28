@@ -27,6 +27,20 @@ def test_parse_layout_accepts_unit_interval_bbox():
     assert blocks[0].bbox[0] == pytest.approx(100.0)
 
 
+def test_parse_repairs_full_page_bboxes():
+    raw = (
+        '{"blocks":['
+        '{"type":"sectionheader","text":"目录","bbox":[0,0,1000,1000]},'
+        '{"type":"text","text":"条目一","bbox":[0,0,1000,1000]},'
+        '{"type":"text","text":"条目二","bbox":[0,0,1000,1000]}'
+        "]}"
+    )
+    blocks = parse_layout_json_text(raw, page=4)
+    assert len(blocks) == 3
+    assert all(b.bbox != [0.0, 0.0, 1000.0, 1000.0] for b in blocks)
+    assert blocks[0].bbox[1] < blocks[1].bbox[1] < blocks[2].bbox[1]
+
+
 def test_blocks_to_markdown_skips_footer():
     from app.knowledge.ingestion.vision_pdf import LayoutBlock
 
