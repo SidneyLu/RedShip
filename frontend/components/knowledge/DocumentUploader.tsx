@@ -10,9 +10,11 @@ import { useToast } from "@/components/providers/ToastProvider";
 interface Props {
   onUploaded?: () => void;
   disabled?: boolean;
+  /** Optional parser query: vision | mineru */
+  parser?: string;
 }
 
-export function DocumentUploader({ onUploaded, disabled }: Props) {
+export function DocumentUploader({ onUploaded, disabled, parser }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const { show } = useToast();
@@ -22,7 +24,8 @@ export function DocumentUploader({ onUploaded, disabled }: Props) {
     form.append("file", file);
     setUploading(true);
     try {
-      const resp = await fetch(`${getApiBase()}/api/knowledge/documents/upload`, {
+      const qs = parser ? `?parser=${encodeURIComponent(parser)}` : "";
+      const resp = await fetch(`${getApiBase()}/api/knowledge/documents/upload${qs}`, {
         method: "POST",
         body: form,
         headers: apiClientHeaders({ Authorization: `Bearer ${getToken() || ""}` }),

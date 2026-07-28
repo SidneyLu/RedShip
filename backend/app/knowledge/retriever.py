@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.models import Document, KnowledgeChunk
-from app.knowledge.indexer import HybridSearchHit, hybrid_search, ensure_collection
+from app.knowledge.contracts import HybridSearchHit
+from app.knowledge.indexer import hybrid_search, ensure_collection
 from app.knowledge.session_docs import session_namespace_filter
 from app.llm.dashscope import dashscope_client
 
@@ -50,6 +51,9 @@ class RetrievedPassage:
     namespace: str = ""
     preview_mode: str = "text"
     media_url: str = ""
+    pdf_page: int | None = None
+    bboxes: list | None = None
+    page_range: str = ""
 
     def to_citation(self, ordinal: int) -> dict:
         """转为 SSE citation 事件与 Message.citations JSON 结构。"""
@@ -74,6 +78,12 @@ class RetrievedPassage:
         }
         if self.media_url:
             out["media_url"] = self.media_url
+        if self.pdf_page is not None:
+            out["pdf_page"] = self.pdf_page
+        if self.bboxes:
+            out["bboxes"] = self.bboxes
+        if self.page_range:
+            out["page_range"] = self.page_range
         return out
 
 
@@ -119,10 +129,30 @@ async def _hits_to_passages(
         title = doc.title if doc else session_titles.get(h.doc_id, h.doc_id)
         preview_mode = "text"
         media_url = ""
+        pdf_page = None
+        bboxes = None
+        page_range = parent.page_range if parent and parent.page_range else ""
+        if parent and isinstance(parent.extra_metadata, dict):
+            layout_boxes = parent.extra_metadata.get("bboxes")
+            if isinstance(layout_boxes, list) and layout_boxes:
+                bboxes = layout_boxes
+                first = layout_boxes[0]
+                if isinstance(first, dict) and first.get("page") is not None:
+                    try:
+                        pdf_page = int(first["page"])
+                    except (TypeError, ValueError):
+                        pdf_page = None
+            if not page_range:
+                ps = parent.extra_metadata.get("page_start")
+                pe = parent.extra_metadata.get("page_end")
+                if ps and pe:
+                    page_range = f"{ps}-{pe}" if ps != pe else str(ps)
         if doc and isinstance(doc.extra_metadata, dict):
             if doc.extra_metadata.get("media_type") == "image":
                 preview_mode = "image"
                 media_url = f"/api/knowledge/documents/{doc.id}/media"
+            elif doc.extra_metadata.get("source_pdf") or doc.extra_metadata.get("parser") == "vision_pdf":
+                preview_mode = "pdf"
         passages.append(
             RetrievedPassage(
                 id=f"c-{i}",
@@ -140,6 +170,9 @@ async def _hits_to_passages(
                 namespace=h.namespace,
                 preview_mode=preview_mode,
                 media_url=media_url,
+                pdf_page=pdf_page,
+                bboxes=bboxes,
+                page_range=page_range or "",
             )
         )
     return passages

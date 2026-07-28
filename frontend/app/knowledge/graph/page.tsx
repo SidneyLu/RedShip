@@ -5,8 +5,8 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";
+import { KnowledgeNav } from "@/components/knowledge/KnowledgeNav";
 import { KnowledgeGraphView } from "@/components/knowledge/KnowledgeGraphView";
-import { DocumentUploader } from "@/components/knowledge/DocumentUploader";
 import { useAuth } from "@/components/providers/AuthProvider";
 import { api, type KnowledgeStats } from "@/lib/api";
 
@@ -59,6 +59,7 @@ function GraphPageInner() {
 
   return (
     <div className="space-y-6">
+      <KnowledgeNav />
       <header className="panel p-6">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
@@ -68,14 +69,14 @@ function GraphPageInner() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Link href="/knowledge" className="btn-ghost">
-              ← 知识库
-            </Link>
             {user?.is_admin && (
               <Link href="/admin" className="btn-ghost">
                 管理 / 重建
               </Link>
             )}
+            <Link href="/knowledge/build" className="btn-outline">
+              构建上传
+            </Link>
           </div>
         </div>
 
@@ -120,20 +121,6 @@ function GraphPageInner() {
           </p>
         )}
       </header>
-
-      {user?.is_admin && (
-        <section className="panel p-6">
-          <h2 className="text-sm font-semibold text-crimson-800">上传后刷新图谱</h2>
-          <div className="mt-3">
-            <DocumentUploader
-              onUploaded={() => {
-                void loadStats();
-                bump();
-              }}
-            />
-          </div>
-        </section>
-      )}
 
       <KnowledgeGraphView
         era={applied.era || undefined}

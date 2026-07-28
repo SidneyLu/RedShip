@@ -2,7 +2,8 @@
 
 /** 引用详情页主体：展示命中摘录、父块/网页正文、图片预览与来源元数据。 */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import Link from "next/link";
 import type { Citation, CitationPreviewPage } from "@/lib/api";
 import { getApiBase, getToken, apiClientHeaders } from "@/lib/api";
 
@@ -45,6 +46,7 @@ function metadataRows(preview: CitationPreviewPage | null | undefined, citation:
 function modeLabel(mode: string | null | undefined, sourceType: string): string {
   if (mode === "web" || sourceType === "web") return "网页阅读器";
   if (mode === "image") return "图片资料";
+  if (mode === "pdf") return "PDF 原文";
   return "文本资料";
 }
 
@@ -102,6 +104,22 @@ export function CitationDetailView({ citation, preview }: Props) {
     (typeof preview?.metadata?.media_url === "string" ? preview.metadata.media_url : null);
   const rows = metadataRows(preview, citation);
   const isWeb = sourceType === "web" || previewMode === "web";
+  const docId =
+    (typeof preview?.metadata?.doc_id === "string" && preview.metadata.doc_id) ||
+    citation?.doc_id ||
+    null;
+  const pdfPage = preview?.pdf_page ?? citation?.pdf_page ?? preview?.page_hint ?? null;
+  const bboxes = preview?.bboxes || citation?.bboxes || null;
+  const readerHref = useMemo(() => {
+    if (!docId || previewMode !== "pdf") return null;
+    const params = new URLSearchParams();
+    if (pdfPage) params.set("page", String(pdfPage));
+    if (bboxes?.length) params.set("rects", JSON.stringify(bboxes));
+    const q = highlight || excerpt;
+    if (q) params.set("q", q.slice(0, 200));
+    const qs = params.toString();
+    return `/reader/doc/${docId}${qs ? `?${qs}` : ""}`;
+  }, [docId, previewMode, pdfPage, bboxes, highlight, excerpt]);
 
   return (
     <article className="space-y-4">
@@ -109,7 +127,13 @@ export function CitationDetailView({ citation, preview }: Props) {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-xs uppercase tracking-widest text-muted">
-              {isWeb ? "网络来源" : previewMode === "image" ? "图片文献" : "知识库文档"}
+              {isWeb
+                ? "网络来源"
+                : previewMode === "image"
+                  ? "图片文献"
+                  : previewMode === "pdf"
+                    ? "扫描 PDF"
+                    : "知识库文档"}
             </div>
             <h2 className="mt-1 text-2xl font-semibold text-crimson-800">{title}</h2>
             {preview?.subtitle && <div className="mt-1 text-sm text-muted">{preview.subtitle}</div>}
@@ -122,13 +146,22 @@ export function CitationDetailView({ citation, preview }: Props) {
                 score {preview.score.toFixed(2)}
               </span>
             )}
+            {readerHref ? (
+              <Link href={readerHref} className="btn-primary text-xs">
+                在原文中打开
+              </Link>
+            ) : null}
           </div>
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted">
           <span className="rounded-full border border-border bg-canvas px-3 py-1">
             {modeLabel(previewMode, sourceType)}
-            {preview?.page_hint ? ` · 第 ${preview.page_hint} 块` : ""}
+            {pdfPage
+              ? ` · 第 ${pdfPage} 页`
+              : preview?.page_hint
+                ? ` · 第 ${preview.page_hint} 块`
+                : ""}
           </span>
           {typeof preview?.trust_score === "number" && (
             <span className="rounded-full border border-crimson-200 bg-crimson-50 px-3 py-1 text-crimson-700">

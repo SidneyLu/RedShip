@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.models import SessionFile
+from app.knowledge.contracts import IMAGE_EXTENSIONS, build_child_chunk_id
 from app.knowledge.indexer import (
     IndexableChunk,
     ensure_collection,
@@ -24,7 +25,6 @@ from app.knowledge.indexer import (
 )
 from app.knowledge.ingestion.chunker import chunk_document
 from app.knowledge.ingestion.parser import (
-    IMAGE_EXTENSIONS,
     SESSION_UPLOAD_EXTENSIONS,
     parse_document,
     parse_image_document,
@@ -128,7 +128,9 @@ async def _ingest_session_rag(
 
     rows = [
         IndexableChunk(
-            id=f"{fake_doc_id}_{child.parent_index}_{child.child_index_in_parent}",
+            id=build_child_chunk_id(
+                fake_doc_id, child.parent_index, child.child_index_in_parent
+            ),
             text=child.text,
             dense=vec,
             source="session",

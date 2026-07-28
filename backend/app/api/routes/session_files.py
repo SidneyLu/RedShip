@@ -17,7 +17,8 @@ from sqlalchemy import select
 from app.api.deps import CurrentUser, DbSession
 from app.core.config import settings
 from app.db.models import SessionFile, Thread
-from app.knowledge.ingestion.parser import IMAGE_EXTENSIONS, SESSION_UPLOAD_EXTENSIONS
+from app.knowledge.contracts import IMAGE_EXTENSIONS
+from app.knowledge.ingestion.parser import SESSION_UPLOAD_EXTENSIONS
 from app.knowledge.session_docs import ingest_session_file, purge_session_file_vectors
 from app.llm.dashscope import dashscope_client
 

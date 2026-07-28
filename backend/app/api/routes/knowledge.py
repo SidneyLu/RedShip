@@ -148,11 +148,65 @@ async def list_documents(
     return [_doc_out(d) for d in rows.scalars()]
 
 
+@router.get("/documents/{document_id}", response_model=DocumentOut)
+async def get_document(
+    user: CurrentUser,
+    session: DbSession,
+    document_id: str,
+) -> DocumentOut:
+    doc = await session.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return _doc_out(doc)
+
+
+@router.post("/documents/{document_id}/reparse", response_model=DocumentOut)
+async def reparse_document(
+    admin: AdminUser,
+    session: DbSession,
+    document_id: str,
+    parser: str = Query(default="vision", description="vision|vision_pdf|mineru"),
+) -> DocumentOut:
+    """Re-run ingest for an existing document (admin)."""
+    doc = await session.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    meta = doc.extra_metadata if isinstance(doc.extra_metadata, dict) else {}
+    pdf_path = meta.get("source_pdf") or doc.file_path
+    path = Path(str(pdf_path)) if pdf_path else None
+    if not path or not path.is_file():
+        raise HTTPException(status_code=400, detail="Source file missing for reparse")
+    try:
+        updated = await ingest_upload_file(
+            session,
+            path,
+            original_filename=path.name,
+            parser=parser,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Reparse failed: {e}") from e
+    await write_audit(
+        session,
+        user_id=admin.id,
+        action="knowledge.reparse",
+        target_type="document",
+        target_id=updated.id,
+        details={"parser": parser},
+    )
+    await session.commit()
+    await session.refresh(updated)
+    return _doc_out(updated)
+
+
 @router.post("/documents/upload", response_model=DocumentOut)
 async def upload_document(
     admin: AdminUser,
     session: DbSession,
     file: UploadFile = File(...),
+    parser: str | None = Query(
+        default=None,
+        description="Optional parser override: vision|vision_pdf|mineru",
+    ),
 ) -> DocumentOut:
     """Upload a PDF/MD/DOCX/image into the knowledge base (admin only)."""
     safe_name = file.filename or "upload.bin"
@@ -167,7 +221,9 @@ async def upload_document(
         shutil.copyfileobj(file.file, out)
 
     try:
-        doc = await ingest_upload_file(session, target, original_filename=safe_name)
+        doc = await ingest_upload_file(
+            session, target, original_filename=safe_name, parser=parser
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Ingestion failed: {e}") from e
 
@@ -177,7 +233,7 @@ async def upload_document(
         action="knowledge.upload",
         target_type="document",
         target_id=doc.id,
-        details={"filename": safe_name, "relative_path": doc.relative_path},
+        details={"filename": safe_name, "relative_path": doc.relative_path, "parser": parser},
     )
     await session.commit()
     await session.refresh(doc)

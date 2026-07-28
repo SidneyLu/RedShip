@@ -15,6 +15,7 @@ from typing import Iterable
 from loguru import logger
 
 from app.core.config import settings
+from app.knowledge.contracts import IMAGE_EXTENSIONS
 
 
 @dataclass
@@ -154,7 +155,6 @@ def _parse_with_mineru(path: Path, *, fmt: str) -> ParsedDocument:
 
 
 SUPPORTED_EXTENSIONS = {".md", ".markdown", ".pdf", ".docx", ".txt", ".text"}
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 SESSION_UPLOAD_EXTENSIONS = SUPPORTED_EXTENSIONS | IMAGE_EXTENSIONS
 MARKDOWN_ONLY_EXTENSIONS = {".md", ".markdown"}
 
@@ -189,6 +189,14 @@ async def parse_image_document(path: Path) -> ParsedDocument:
         sections=[Section(heading_path=path.stem, text=text)],
         metadata={"format": path.suffix.lstrip("."), "parser": "vision"},
     )
+
+
+async def parse_scanned_pdf_document(path: Path) -> ParsedDocument:
+    """扫描 PDF：qwen VL 分页 layout → Markdown sections（含页码 metadata）。"""
+    from app.knowledge.ingestion.vision_pdf import extract_scanned_pdf
+
+    result = await extract_scanned_pdf(path)
+    return result.parsed
 
 
 def bibliography_extensions() -> set[str]:

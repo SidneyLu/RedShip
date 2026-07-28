@@ -10,10 +10,11 @@ interface Props {
   loading?: boolean;
   error?: string | null;
   onDelete?: (doc: KnowledgeDoc) => void;
+  onOpen?: (doc: KnowledgeDoc) => void;
   canDelete?: boolean;
 }
 
-export function KnowledgeList({ docs, loading, error, onDelete, canDelete }: Props) {
+export function KnowledgeList({ docs, loading, error, onDelete, onOpen, canDelete }: Props) {
   return (
     <div className="overflow-x-auto scroll-pretty">
       {error && <div className="mb-4 text-sm text-crimson-700">{error}</div>}
@@ -46,10 +47,26 @@ export function KnowledgeList({ docs, loading, error, onDelete, canDelete }: Pro
             </tr>
           )}
           {docs.map((d) => (
-            <tr key={d.id} className="border-t border-border">
+            <tr
+              key={d.id}
+              className="border-t border-border hover:bg-canvas/50"
+            >
               <td className="px-3 py-2">
-                <div className="font-medium text-ink">{d.title}</div>
-                {d.relative_path && <div className="text-xs text-muted">{d.relative_path}</div>}
+                {onOpen ? (
+                  <button
+                    type="button"
+                    className="text-left"
+                    onClick={() => onOpen(d)}
+                  >
+                    <div className="font-medium text-ink hover:text-crimson-800">{d.title}</div>
+                    {d.relative_path && <div className="text-xs text-muted">{d.relative_path}</div>}
+                  </button>
+                ) : (
+                  <>
+                    <div className="font-medium text-ink">{d.title}</div>
+                    {d.relative_path && <div className="text-xs text-muted">{d.relative_path}</div>}
+                  </>
+                )}
               </td>
               <td className="px-3 py-2 text-muted">{d.source}</td>
               <td className="px-3 py-2 text-muted">{d.series || "—"}</td>

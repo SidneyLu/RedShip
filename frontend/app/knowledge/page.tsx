@@ -1,165 +1,112 @@
 "use client";
 
-/** 知识库浏览页：统计、文档列表与上传入口。 */
+/** 知识库概览：统计与入口（不含上传）。 */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";
-import { DocumentUploader } from "@/components/knowledge/DocumentUploader";
-import { KnowledgeList } from "@/components/knowledge/KnowledgeList";
-import { useAuth } from "@/components/providers/AuthProvider";
-import { useToast } from "@/components/providers/ToastProvider";
+import { KnowledgeNav } from "@/components/knowledge/KnowledgeNav";
 import { api, type KnowledgeDoc, type KnowledgeStats } from "@/lib/api";
 
-export default function KnowledgePage() {
+export default function KnowledgeOverviewPage() {
   return (
     <AppShell>
-      <KnowledgeView />
+      <KnowledgeOverview />
     </AppShell>
   );
 }
 
-function KnowledgeView() {
-  const { user } = useAuth();
-  const { show } = useToast();
+function KnowledgeOverview() {
   const [stats, setStats] = useState<KnowledgeStats | null>(null);
   const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
-  const [q, setQ] = useState("");
-  const [era, setEra] = useState("");
-  const [series, setSeries] = useState("");
-  const [status, setStatus] = useState("");
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const reload = async () => {
-    setLoading(true);
-    try {
-      const [s, d] = await Promise.all([
-        api<KnowledgeStats>("/api/knowledge/stats"),
-        api<KnowledgeDoc[]>(
-          `/api/knowledge/documents?` +
-            new URLSearchParams({
-              ...(q ? { q } : {}),
-              ...(era ? { era } : {}),
-              ...(series ? { series } : {}),
-              ...(status ? { status } : {}),
-              limit: "200",
-            }).toString()
-        ),
-      ]);
-      setStats(s);
-      setDocs(d);
-      setError(null);
-    } catch (e: any) {
-      setError(String(e.message || e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    (async () => {
+      try {
+        const [s, d] = await Promise.all([
+          api<KnowledgeStats>("/api/knowledge/stats"),
+          api<KnowledgeDoc[]>("/api/knowledge/documents?limit=8"),
+        ]);
+        setStats(s);
+        setDocs(d);
+      } catch (e: unknown) {
+        setError(String((e as Error)?.message || e));
+      }
+    })();
   }, []);
 
-  const handleDelete = async (doc: KnowledgeDoc) => {
-    if (!confirm(`确定删除「${doc.title}」？`)) return;
-    try {
-      await api(`/api/knowledge/documents/${doc.id}`, { method: "DELETE" });
-      show({ title: "已删除", variant: "success" });
-      reload();
-    } catch (e: any) {
-      show({ title: "删除失败", description: String(e.message || e), variant: "destructive" });
-    }
-  };
+  const needsRerun = useMemo(
+    () =>
+      docs.filter((d) => {
+        const r = d.extra_metadata?.review as { needs_rerun?: boolean } | undefined;
+        return Boolean(r?.needs_rerun);
+      }).length,
+    [docs]
+  );
 
   return (
     <div className="space-y-6">
+      <KnowledgeNav />
       <header className="panel p-6">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold text-crimson-800">知识库总览</h1>
+            <h1 className="text-2xl font-semibold text-crimson-800">知识库概览</h1>
             <p className="mt-1 text-sm text-muted">
-              所有在 <code>bibliography/</code> 中的文献都将按 SHA-256 增量入库，并以混合检索（ANN + BM25）+ 重排提供证据。
+              浏览文献与图谱；上传与 VL 重跑请到「构建」页。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Link href="/knowledge/graph" className="btn-outline">
-              知识图谱
+            <Link href="/knowledge/documents" className="btn-outline">
+              文献列表
             </Link>
-            <Link href="/" className="btn-ghost">
-              ← 返回对话
+            <Link href="/knowledge/build" className="btn-primary">
+              去构建
             </Link>
           </div>
         </div>
-        {stats && (
-          <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-4">
+        {error ? <p className="mt-3 text-sm text-crimson-700">{error}</p> : null}
+        {stats ? (
+          <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-5">
             <StatCard label="入库文档" value={stats.indexed_documents} />
             <StatCard label="父块总数" value={stats.total_chunks} />
             <StatCard label="待处理" value={stats.pending_documents} />
             <StatCard label="失败" value={stats.failed_documents} tone="warn" />
+            <StatCard label="近期需重跑" value={needsRerun} tone="warn" />
           </div>
-        )}
-        {stats && (
+        ) : null}
+        {stats ? (
           <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <BreakdownCard title="按历史时期" items={stats.by_era.map((b) => ({ label: b.era, value: b.count }))} />
-            <BreakdownCard title="按丛书系列" items={stats.by_series.map((b) => ({ label: b.series, value: b.count }))} />
-          </div>
-        )}
-      </header>
-
-      {user?.is_admin && (
-        <section className="panel p-6">
-          <h2 className="text-sm font-semibold text-crimson-800">上传文档</h2>
-          <div className="mt-3">
-            <DocumentUploader onUploaded={reload} />
-          </div>
-        </section>
-      )}
-
-      <section className="panel p-6">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="grow">
-            <label className="label">关键字</label>
-            <input
-              className="input mt-1"
-              placeholder="标题 / 路径"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
+            <BreakdownCard
+              title="按历史时期"
+              items={stats.by_era.map((b) => ({ label: b.era, value: b.count }))}
+            />
+            <BreakdownCard
+              title="按丛书系列"
+              items={stats.by_series.map((b) => ({ label: b.series, value: b.count }))}
             />
           </div>
-          <div>
-            <label className="label">历史时期</label>
-            <input className="input mt-1" value={era} onChange={(e) => setEra(e.target.value)} />
-          </div>
-          <div>
-            <label className="label">丛书</label>
-            <input className="input mt-1" value={series} onChange={(e) => setSeries(e.target.value)} />
-          </div>
-          <div>
-            <label className="label">状态</label>
-            <select className="input mt-1" value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="">全部</option>
-              <option value="indexed">已索引</option>
-              <option value="parsing">解析中</option>
-              <option value="pending">待处理</option>
-              <option value="failed">失败</option>
-            </select>
-          </div>
-          <button type="button" className="btn-primary" onClick={reload}>
-            筛选
-          </button>
-        </div>
+        ) : null}
+      </header>
 
-        <div className="mt-4">
-          <KnowledgeList
-            docs={docs}
-            loading={loading}
-            error={error}
-            canDelete={!!user?.is_admin}
-            onDelete={handleDelete}
-          />
+      <section className="panel p-6">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-crimson-800">近期文档</h2>
+          <Link href="/knowledge/documents" className="text-xs text-crimson-700 hover:underline">
+            查看全部
+          </Link>
         </div>
+        <ul className="divide-y divide-border">
+          {docs.map((d) => (
+            <li key={d.id} className="flex items-center justify-between gap-3 py-2.5 text-sm">
+              <Link href={`/knowledge/documents/${d.id}`} className="truncate font-medium text-ink hover:text-crimson-800">
+                {d.title}
+              </Link>
+              <span className="shrink-0 text-xs text-muted">{d.status}</span>
+            </li>
+          ))}
+          {!docs.length ? <li className="py-4 text-sm text-muted">暂无文档</li> : null}
+        </ul>
       </section>
     </div>
   );

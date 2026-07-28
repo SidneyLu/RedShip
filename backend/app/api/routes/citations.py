@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
 from app.db.models import Document, KnowledgeChunk, Message, Thread
+from app.knowledge.source_pdf import resolve_source_pdf
 
 router = APIRouter(prefix="/api/threads", tags=["citations"])
 
@@ -68,6 +69,9 @@ class CitationPreviewPage(BaseModel):
     external_url: str | None = None
     metadata: dict[str, Any] | None = None
     media_url: str | None = None
+    pdf_page: int | None = None
+    bboxes: list[Any] | None = None
+    file_url: str | None = None
 
 
 def _to_out(c: dict[str, Any]) -> CitationOut:
@@ -216,11 +220,37 @@ def _preview_payload(
         elif doc and isinstance(doc.extra_metadata, dict) and doc.extra_metadata.get("media_type") == "image":
             preview_mode = "image"
             media_url = media_url or f"/api/knowledge/documents/{doc.id}/media"
+        elif doc and isinstance(doc.extra_metadata, dict) and (
+            doc.extra_metadata.get("source_pdf")
+            or doc.extra_metadata.get("parser") == "vision_pdf"
+            or resolve_source_pdf(doc) is not None
+        ):
+            preview_mode = "pdf"
         else:
             preview_mode = "text"
 
     if preview_mode == "image" and not media_url and doc:
         media_url = f"/api/knowledge/documents/{doc.id}/media"
+
+    pdf_page = _int_or_none(c.get("pdf_page"))
+    bboxes = c.get("bboxes") if isinstance(c.get("bboxes"), list) else None
+    if bboxes is None and parent and isinstance(parent.extra_metadata, dict):
+        raw = parent.extra_metadata.get("bboxes")
+        if isinstance(raw, list):
+            bboxes = raw
+    if pdf_page is None and bboxes:
+        first = bboxes[0]
+        if isinstance(first, dict):
+            pdf_page = _int_or_none(first.get("page"))
+    if pdf_page is None and parent and parent.page_range:
+        try:
+            pdf_page = int(str(parent.page_range).split("-")[0])
+        except ValueError:
+            pdf_page = None
+
+    file_url = None
+    if preview_mode == "pdf" and doc:
+        file_url = f"/api/knowledge/documents/{doc.id}/source/file"
 
     # web：有正文可预览；image：始终可预览；其余默认非 web
     if c.get("previewable") is not None:
@@ -242,8 +272,16 @@ def _preview_payload(
         "source_type": source_type,
         "media_url": media_url,
         "preview_mode": preview_mode,
+        "pdf_page": pdf_page,
+        "bboxes": bboxes,
+        "file_url": file_url,
+        "page_range": c.get("page_range") or (parent.page_range if parent else None),
     }
-    metadata = {k: v for k, v in metadata.items() if v not in (None, "")}
+    metadata = {k: v for k, v in metadata.items() if v not in (None, "", [])}
+
+    page_hint = pdf_page
+    if page_hint is None and parent_index is not None:
+        page_hint = parent_index + 1
 
     return {
         "citation_id": citation_id,
@@ -259,9 +297,12 @@ def _preview_payload(
         "external_url": c.get("url"),
         "previewable": previewable,
         "preview_mode": preview_mode,
-        "page_hint": parent_index + 1 if parent_index is not None else None,
+        "page_hint": page_hint,
         "metadata": metadata,
         "media_url": media_url,
+        "pdf_page": pdf_page,
+        "bboxes": bboxes,
+        "file_url": file_url,
     }
 
 

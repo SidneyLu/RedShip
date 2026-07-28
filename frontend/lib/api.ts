@@ -128,6 +128,9 @@ export interface Citation {
   preview_mode?: "text" | "pdf" | "image" | "web" | string | null;
   media_url?: string | null;
   score?: number | null;
+  pdf_page?: number | null;
+  bboxes?: Array<{ page?: number; bbox?: number[]; type?: string }> | null;
+  page_range?: string | null;
 }
 
 export interface CitationPreviewCard {
@@ -160,6 +163,9 @@ export interface CitationPreviewPage {
   external_url?: string | null;
   metadata?: Record<string, unknown> | null;
   media_url?: string | null;
+  pdf_page?: number | null;
+  bboxes?: Array<{ page?: number; bbox?: number[]; type?: string }> | null;
+  file_url?: string | null;
 }
 
 export function getThreadMessageCitationPreview(

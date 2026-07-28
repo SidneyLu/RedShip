@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.knowledge.indexer import HybridSearchHit
+from app.knowledge.contracts import HybridSearchHit
 from app.knowledge.retriever import RetrievedPassage, _merge_hits, render_evidence_block
 
 pytestmark = pytest.mark.unit

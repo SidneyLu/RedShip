@@ -697,6 +697,86 @@ class DashScopeClient:
                 raise DashScopeAPIError("describe_image returned empty content")
         raise RuntimeError("describe_image unreachable")
 
+    async def extract_page_layout(self, path: str | Path, *, page: int = 1) -> str:
+        """VL layout extraction: OCR text blocks with 0–1000 bboxes as JSON text.
+
+        Uses ``settings.vision_model`` (default qwen3.5-flash).
+        """
+        _ensure_sdk_configured()
+        p = Path(path).resolve()
+        if not p.is_file():
+            raise FileNotFoundError(str(p))
+
+        mime, _ = mimetypes.guess_type(p.name)
+        if not mime or not mime.startswith("image/"):
+            mime = "image/png"
+        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        image_ref = f"data:{mime};base64,{b64}"
+        prompt = (
+            f"这是扫描文献 PDF 的第 {page} 页图像。"
+            "请做版面分析与 OCR，只输出 JSON（不要 Markdown 解释），格式：\n"
+            '{"blocks":[{"type":"text|sectionheader|pagefooter|pageheader",'
+            '"text":"...","bbox":[x0,y0,x1,y1]}]}\n'
+            "坐标 bbox 使用 0–1000 归一化（相对页宽高）。"
+            "页眉页脚用 pageheader/pagefooter；正文用 text；标题用 sectionheader。"
+            "尽量完整保留文字，勿编造。"
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"image": image_ref},
+                    {"text": prompt},
+                ],
+            }
+        ]
+
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=2, max=10),
+            retry=retry_if_exception_type(_RETRYABLE_LLM_ERRORS + (DashScopeAPIError,)),
+            reraise=True,
+        ):
+            with attempt:
+                resp = await AioMultiModalConversation.call(
+                    api_key=settings.dashscope_api_key,
+                    model=settings.vision_model,
+                    messages=messages,
+                )
+                status = getattr(resp, "status_code", None)
+                if status is not None and int(status) != HTTPStatus.OK:
+                    raise DashScopeAPIError(
+                        f"extract_page_layout failed: {getattr(resp, 'code', None)} "
+                        f"{getattr(resp, 'message', None)}",
+                        status_code=int(status) if status is not None else None,
+                        code=str(getattr(resp, "code", None) or ""),
+                    )
+                output = getattr(resp, "output", None)
+                data = _obj_to_dict(output) or {}
+                choices = data.get("choices") or []
+                if choices:
+                    choice0 = choices[0] if isinstance(choices[0], dict) else _obj_to_dict(choices[0])
+                    msg = (choice0 or {}).get("message") or {}
+                    if not isinstance(msg, dict):
+                        msg = _obj_to_dict(msg) or {}
+                    content = msg.get("content")
+                    if isinstance(content, list) and content:
+                        texts = []
+                        for part in content:
+                            if isinstance(part, dict) and part.get("text"):
+                                texts.append(str(part["text"]))
+                            elif isinstance(part, str):
+                                texts.append(part)
+                        if texts:
+                            return "\n".join(texts).strip()
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
+                text = data.get("text")
+                if text:
+                    return str(text).strip()
+                raise DashScopeAPIError("extract_page_layout returned empty content")
+        raise RuntimeError("extract_page_layout unreachable")
+
     async def delete_file(self, file_id: str) -> None:
         url = f"{settings.resolved_dashscope_files_base_url}/files/{file_id}"
         http = self._ensure_http()

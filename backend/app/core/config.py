@@ -36,25 +36,26 @@ class Settings(BaseSettings):
     dashscope_files_base_url: str | None = Field(default=None, alias="DASHSCOPE_FILES_BASE_URL")
     dashscope_rerank_url: str | None = Field(default=None, alias="DASHSCOPE_RERANK_URL")
 
+    # --- Build：embedding（摄入写入）；Query：rerank / chat / research ---
     embedding_model: str = Field(default="text-embedding-v4", alias="EMBEDDING_MODEL")
     embedding_dim: int = Field(default=1024, alias="EMBEDDING_DIM")
     rerank_model: str = Field(default="qwen3-rerank", alias="RERANK_MODEL")
     chat_model: str = Field(default="qwen3.5-flash", alias="CHAT_MODEL")
     research_model: str = Field(default="qwen3.5-plus", alias="RESEARCH_MODEL")
 
-    # --- 检索与深度研究：控制召回量与反思轮次 ---
+    # --- Query：检索与深度研究（读路径） ---
     retrieval_top_k: int = Field(default=20, alias="RETRIEVAL_TOP_K")
     rerank_top_k: int = Field(default=5, alias="RERANK_TOP_K")
     research_max_iterations: int = Field(default=3, alias="RESEARCH_MAX_ITERATIONS")
     research_parallel_subqueries: int = Field(default=4, alias="RESEARCH_PARALLEL_SUBQUERIES")
     research_per_subquery_extracts: int = Field(default=3, alias="RESEARCH_PER_SUBQUERY_EXTRACTS")
 
-    # --- RAG 本地优先门控 + 网页抽取 ---
+    # --- RAG 本地优先门控 + 网页抽取（Query） ---
     rag_kb_min_hits: int = Field(default=3, alias="RAG_KB_MIN_HITS")
     rag_kb_score_floor: float = Field(default=0.35, alias="RAG_KB_SCORE_FLOOR")
     rag_web_extract_top_k: int = Field(default=3, alias="RAG_WEB_EXTRACT_TOP_K")
 
-    # --- 文档智能：小文件走 Files API，大文件走会话 Milvus ---
+    # --- 文档智能：小文件走 Files API，大文件走会话 Milvus（Build+Query 会话路径） ---
     files_api_inline_max_tokens: int = Field(default=100_000, alias="FILES_API_INLINE_MAX_TOKENS")
     files_api_inline_max_bytes: int = Field(default=8_000_000, alias="FILES_API_INLINE_MAX_BYTES")
     session_doc_chunk_prefix: str = Field(default="session_", alias="SESSION_DOC_CHUNK_PREFIX")
@@ -63,11 +64,15 @@ class Settings(BaseSettings):
     bibliography_markdown_only: bool = Field(default=False, alias="BIBLIOGRAPHY_MARKDOWN_ONLY")
     bibliography_auto_sync: bool = Field(default=False, alias="BIBLIOGRAPHY_AUTO_SYNC")
 
-    # --- MinerU：PDF/DOCX 解析，CPU pipeline 后端 ---
+    # --- Build：MinerU / VL 扫描 PDF 解析 ---
     mineru_backend: str = Field(default="pipeline", alias="MINERU_BACKEND")
     mineru_timeout_seconds: int = Field(default=600, alias="MINERU_TIMEOUT_SECONDS")
     mineru_ocr: bool = Field(default=True, alias="MINERU_OCR")
-    vision_model: str = Field(default="qwen3.5-flash", alias="VISION_MODEL")
+    vision_model: str = Field(default="qwen3.5-flash", alias="VISION_MODEL")  # Build
+    vision_pdf_enabled: bool = Field(default=False, alias="VISION_PDF_ENABLED")
+    vision_pdf_dpi: int = Field(default=144, alias="VISION_PDF_DPI")
+    vision_pdf_max_pages: int = Field(default=50, alias="VISION_PDF_MAX_PAGES")
+    vision_review_threshold: float = Field(default=0.6, alias="VISION_REVIEW_THRESHOLD")
 
     # --- 会话记忆：滑动窗口 + 滚动摘要 ---
     session_history_window: int = Field(default=8, alias="SESSION_HISTORY_WINDOW")

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.models import Document, KnowledgeChunk
+from app.knowledge.contracts import IMAGE_EXTENSIONS, build_child_chunk_id
 from app.knowledge.indexer import (
     IndexableChunk,
     drop_doc,
@@ -28,7 +29,6 @@ from app.knowledge.indexer import (
 )
 from app.knowledge.ingestion.chunker import chunk_document, ParentChunk
 from app.knowledge.ingestion.parser import (
-    IMAGE_EXTENSIONS,
     iter_bibliography,
     parse_document,
     parse_image_document,
@@ -109,6 +109,7 @@ async def _ingest_one(
     source: str = "bibliography",
     relative_path: str | None = None,
     force: bool = False,
+    parser: str | None = None,
 ) -> str:
     """Parse, chunk, embed, upsert into Milvus, and persist Document/Chunk rows."""
     file_hash = _sha256(path)
@@ -184,9 +185,44 @@ async def _ingest_one(
             raise
 
     is_image = path.suffix.lower() in IMAGE_EXTENSIONS
+    is_pdf = path.suffix.lower() == ".pdf"
+    use_vision_pdf = is_pdf and (
+        (parser or "").lower() in {"vision", "vision_pdf", "vl"}
+        or (settings.vision_pdf_enabled and (parser or "").lower() != "mineru")
+    )
+    vision_sidecar: dict | None = None
     try:
         if is_image:
             parsed = await parse_image_document(path)
+        elif use_vision_pdf:
+            from app.knowledge.ingestion.vision_pdf import (
+                extract_scanned_pdf,
+                write_vision_artifacts,
+            )
+            from app.knowledge.ingestion.vision_review import review_vision_markdown
+
+            result = await extract_scanned_pdf(path)
+            md_path, layout_path = write_vision_artifacts(path, result)
+            review = await review_vision_markdown(
+                result.markdown,
+                pages=result.pages,
+                block_count=result.block_count,
+                empty_pages=result.empty_pages,
+            )
+            parsed = result.parsed
+            vision_sidecar = {
+                "parser": "vision_pdf",
+                "vision_model": settings.vision_model,
+                "source_pdf": str(path.resolve()),
+                "layout_path": str(layout_path.resolve()),
+                "md_path": str(md_path.resolve()),
+                "review": review,
+                "pages": result.pages,
+                "block_count": result.block_count,
+            }
+            # Index MD path; keep PDF via source_pdf metadata
+            doc.file_path = str(md_path)
+            doc.mime_type = "md"
         else:
             parsed = parse_document(path)
     except Exception as e:
@@ -222,7 +258,9 @@ async def _ingest_one(
     for child, vec in zip(children, embeddings):
         rows.append(
             IndexableChunk(
-                id=f"{doc.id}_{child.parent_index}_{child.child_index_in_parent}",
+                id=build_child_chunk_id(
+                    doc.id, child.parent_index, child.child_index_in_parent
+                ),
                 text=child.text,
                 dense=vec,
                 source="bibliography" if source == "bibliography" else source,
@@ -237,10 +275,28 @@ async def _ingest_one(
     upsert_chunks(collection_name, rows)
 
     # Persist parent chunks
+    import json as _json
+
     for parent in parents:
         child_ids = [
-            f"{doc.id}_{c.parent_index}_{c.child_index_in_parent}" for c in parent.children
+            build_child_chunk_id(doc.id, c.parent_index, c.child_index_in_parent)
+            for c in parent.children
         ]
+        page_start = (parent.metadata or {}).get("page_start")
+        page_end = (parent.metadata or {}).get("page_end")
+        page_range = None
+        if page_start and page_end:
+            page_range = (
+                f"{page_start}-{page_end}" if page_start != page_end else str(page_start)
+            )
+        extra = dict(parent.metadata or {})
+        # Prefer structured layout list for API consumers
+        raw_bboxes = extra.pop("bboxes_json", None)
+        if raw_bboxes:
+            try:
+                extra["bboxes"] = _json.loads(raw_bboxes)
+            except Exception:
+                extra["bboxes_json"] = raw_bboxes
         session.add(
             KnowledgeChunk(
                 document_id=doc.id,
@@ -249,13 +305,15 @@ async def _ingest_one(
                 heading_path=parent.heading_path[:500],
                 era=doc.era,
                 child_ids=child_ids,
-                extra_metadata=parent.metadata or None,
+                page_range=page_range,
+                extra_metadata=extra or None,
             )
         )
 
     doc.chunks_count = len(parents)
-    doc.file_path = str(path)
-    doc.mime_type = path.suffix.lstrip(".").lower()
+    if not vision_sidecar:
+        doc.file_path = str(path)
+        doc.mime_type = path.suffix.lstrip(".").lower()
     doc.size_bytes = path.stat().st_size
     meta = dict(doc.extra_metadata or {})
     if is_image:
@@ -266,6 +324,8 @@ async def _ingest_one(
                 "parser": "vision",
             }
         )
+    elif vision_sidecar:
+        meta.update(vision_sidecar)
     elif parsed.metadata:
         meta.update({k: v for k, v in parsed.metadata.items() if k not in meta})
     doc.extra_metadata = meta or None
@@ -290,6 +350,7 @@ async def ingest_upload_file(
     path: Path,
     *,
     original_filename: str | None = None,
+    parser: str | None = None,
 ) -> Document:
     """Ingest a user-uploaded knowledge document (source=upload)."""
     collection = ensure_collection(settings.milvus_kb_collection)
@@ -302,6 +363,7 @@ async def ingest_upload_file(
         source="upload",
         relative_path=rel,
         force=True,
+        parser=parser,
     )
     doc = (
         await session.execute(select(Document).where(Document.relative_path == rel))

@@ -25,7 +25,7 @@ from app.agents.rag.state import RagState, WebHit
 from app.core.config import settings
 from app.core.redis import cache_get_json, cache_set_json
 from app.db.models import SessionFile
-from app.knowledge.ingestion.parser import IMAGE_EXTENSIONS
+from app.knowledge.contracts import IMAGE_EXTENSIONS
 from app.knowledge.retriever import RetrievedPassage, retrieve
 from app.knowledge.web_extract import extract_urls
 from app.llm.dashscope import dashscope_client
