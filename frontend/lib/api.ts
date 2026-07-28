@@ -222,6 +222,33 @@ export interface KnowledgeDoc {
   updated_at: string;
 }
 
+/** Probe result for MD → original PDF (reserved; no pdf.js UI yet). */
+export interface KnowledgeDocumentSource {
+  available: boolean;
+  document_id: string;
+  mime_type?: string | null;
+  filename?: string | null;
+  relative_path?: string | null;
+  /** How the PDF was resolved: metadata | sibling | self */
+  resolution?: "metadata" | "sibling" | "self" | string | null;
+  download_path?: string | null;
+}
+
+export function knowledgeDocumentSourcePath(documentId: string): string {
+  return `/api/knowledge/documents/${documentId}/source`;
+}
+
+export function knowledgeDocumentSourceFilePath(documentId: string): string {
+  return `/api/knowledge/documents/${documentId}/source/file`;
+}
+
+/** JSON probe — `{ available: false }` when no PDF is paired (HTTP 200). */
+export async function getKnowledgeDocumentSource(
+  documentId: string
+): Promise<KnowledgeDocumentSource> {
+  return api<KnowledgeDocumentSource>(knowledgeDocumentSourcePath(documentId));
+}
+
 export interface KnowledgeStats {
   total_documents: number;
   indexed_documents: number;

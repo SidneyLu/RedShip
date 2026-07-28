@@ -96,6 +96,7 @@ RESEARCH_MAX_ITERATIONS=6
 | `POST /api/auth/login` | JWT 登录 |
 | `POST /api/chat/stream` | SSE 双模式聊天 |
 | `GET /api/knowledge/documents` | 知识库列表 |
+| `GET /api/knowledge/documents/{id}/source` | 探测 MD 对应源 PDF（`available`）；`/source/file` 或 `/pdf` 下载 |
 | `POST /api/knowledge/documents/upload` | 管理员上传文档 |
 | `POST /api/admin/bibliography/sync` | 增量同步 |
 | `POST /api/admin/bibliography/reindex` | 全量重建索引 |

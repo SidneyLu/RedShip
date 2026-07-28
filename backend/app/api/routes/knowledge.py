@@ -1,4 +1,16 @@
-"""知识库文档列表、详情与管理员上传（触发 ingest_upload_file）。"""
+"""知识库文档列表、详情与管理员上传（触发 ingest_upload_file）。
+
+Reserved source-PDF contract (MD ↔ original PDF):
+  GET  /api/knowledge/documents/{id}/source|original
+       → JSON probe { available, mime_type, relative_path?, filename? }
+       → with Accept: application/pdf (and no application/json) → stream PDF
+  GET  .../source/file | .../original/file | .../pdf
+       → stream PDF, or 404 JSON { available: false, detail }
+
+Pairing (see app.knowledge.source_pdf): extra_metadata source_pdf|original_path|
+original_pdf first, else self .pdf, else sibling stem (foo.md ↔ foo.pdf under
+bibliography/ or uploads/). Missing PDF does not affect MD RAG indexing.
+"""
 from __future__ import annotations
 
 import mimetypes
@@ -7,10 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.core.audit import write_audit
@@ -19,6 +32,7 @@ from app.db.models import Document, KnowledgeChunk
 from app.knowledge.indexer import drop_doc
 from app.knowledge.ingestion.watcher import ingest_upload_file
 from app.knowledge.kg_extract import query_ego_graph, query_graph
+from app.knowledge.source_pdf import resolve_source_pdf
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -236,6 +250,131 @@ async def get_document_media(
         media_type=mime or "application/octet-stream",
         filename=path.name,
     )
+
+
+class DocumentSourceOut(BaseModel):
+    """Probe payload for MD → original PDF mapping (reserved, forward-compatible)."""
+
+    available: bool
+    document_id: str
+    mime_type: str | None = None
+    filename: str | None = None
+    relative_path: str | None = None
+    resolution: str | None = Field(
+        default=None, description="How the PDF was resolved: metadata | sibling | self"
+    )
+    download_path: str | None = None
+
+
+def _source_download_path(document_id: str) -> str:
+    return f"/api/knowledge/documents/{document_id}/source/file"
+
+
+def _wants_pdf_stream(request: Request) -> bool:
+    """True when client asks for PDF bytes on the probe path via Accept."""
+    accept = (request.headers.get("accept") or "").lower()
+    if "application/json" in accept:
+        return False
+    return "application/pdf" in accept
+
+
+async def _load_document(session: AsyncSession, document_id: str) -> Document:
+    doc = (
+        await session.execute(select(Document).where(Document.id == document_id))
+    ).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
+def _probe_source(doc: Document, document_id: str) -> DocumentSourceOut:
+    ref = resolve_source_pdf(doc)
+    if not ref:
+        return DocumentSourceOut(available=False, document_id=document_id)
+    return DocumentSourceOut(
+        available=True,
+        document_id=document_id,
+        mime_type=ref.mime_type,
+        filename=ref.filename,
+        relative_path=ref.relative_path,
+        resolution=ref.resolution,
+        download_path=_source_download_path(document_id),
+    )
+
+
+async def _stream_document_source_pdf(
+    session: AsyncSession, document_id: str
+) -> FileResponse | JSONResponse:
+    doc = await _load_document(session, document_id)
+    ref = resolve_source_pdf(doc)
+    if not ref:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "available": False,
+                "document_id": document_id,
+                "detail": "Source PDF not available",
+            },
+        )
+    return FileResponse(
+        ref.path,
+        media_type=ref.mime_type,
+        filename=ref.filename,
+    )
+
+
+async def _get_document_source_or_stream(
+    request: Request, document_id: str, session: AsyncSession
+) -> DocumentSourceOut | FileResponse | JSONResponse:
+    if _wants_pdf_stream(request):
+        return await _stream_document_source_pdf(session, document_id)
+    doc = await _load_document(session, document_id)
+    return _probe_source(doc, document_id)
+
+
+@router.get("/documents/{document_id}/source")
+async def get_document_source(
+    document_id: str, request: Request, user: CurrentUser, session: DbSession
+) -> DocumentSourceOut | FileResponse | JSONResponse:
+    """Probe MD→PDF pairing, or stream PDF when ``Accept: application/pdf``.
+
+    Default (JSON): ``{ available, mime_type, relative_path?, filename? }``.
+    When no PDF is paired, returns ``available: false`` with HTTP 200 so clients
+    can probe without treating absence as a hard failure for MD RAG.
+    """
+    return await _get_document_source_or_stream(request, document_id, session)
+
+
+@router.get("/documents/{document_id}/original")
+async def get_document_original(
+    document_id: str, request: Request, user: CurrentUser, session: DbSession
+) -> DocumentSourceOut | FileResponse | JSONResponse:
+    """Alias of ``/source`` — reserved alternate probe/stream path."""
+    return await _get_document_source_or_stream(request, document_id, session)
+
+
+@router.get("/documents/{document_id}/source/file")
+async def get_document_source_file(
+    document_id: str, user: CurrentUser, session: DbSession
+) -> FileResponse | JSONResponse:
+    """Stream the paired source PDF, or 404 JSON ``{ available: false }``."""
+    return await _stream_document_source_pdf(session, document_id)
+
+
+@router.get("/documents/{document_id}/original/file")
+async def get_document_original_file(
+    document_id: str, user: CurrentUser, session: DbSession
+) -> FileResponse | JSONResponse:
+    """Alias of ``/source/file``."""
+    return await _stream_document_source_pdf(session, document_id)
+
+
+@router.get("/documents/{document_id}/pdf")
+async def get_document_pdf(
+    document_id: str, user: CurrentUser, session: DbSession
+) -> FileResponse | JSONResponse:
+    """Alias of ``/source/file`` — reserved short path for PDF download."""
+    return await _stream_document_source_pdf(session, document_id)
 
 
 class GraphNode(BaseModel):
