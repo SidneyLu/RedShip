@@ -146,7 +146,7 @@ class Message(Base, TimestampMixin):
 
 
 class SessionFile(Base, TimestampMixin):
-    """会话附件：小文件 files_api（dashscope_file_id），大文件 session_rag（milvus_namespace）。"""
+    """会话附件：fulltext（全文注入+索引）/ session_rag（仅索引）；旧值 files_api 兼容。"""
 
     __tablename__ = "session_files"
 
@@ -159,11 +159,11 @@ class SessionFile(Base, TimestampMixin):
     file_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mime_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    mode: Mapped[str] = mapped_column(String(16), nullable=False)  # files_api | session_rag
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)  # pending|fulltext|session_rag|files_api
     dashscope_file_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     milvus_namespace: Mapped[str | None] = mapped_column(String(128), nullable=True)
     chunks_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="ready", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="ready", nullable=False)  # processing|ready|failed
     extra_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     thread: Mapped[Thread] = relationship(back_populates="session_files")

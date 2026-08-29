@@ -356,6 +356,26 @@ export function ChatInterface({ initialThreadId }: ChatInterfaceProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
+  // Poll while any session file is still processing.
+  const hasProcessingFiles = sessionFiles.some((f) => f.status === "processing");
+  useEffect(() => {
+    if (!threadId || !hasProcessingFiles) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const files = await api<SessionFileItem[]>(`/api/threads/${threadId}/files`);
+        if (!cancelled) setSessionFiles(files);
+      } catch {
+        /* ignore transient poll errors */
+      }
+    };
+    const id = window.setInterval(tick, 1800);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [threadId, hasProcessingFiles]);
+
   const researchSteps = useMemo(() => {
     const fromParts = getResearchStepsFromMessages(displayMessages);
     if (viewMessages !== null) return fromParts;

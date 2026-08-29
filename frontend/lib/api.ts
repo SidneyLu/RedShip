@@ -307,10 +307,13 @@ export interface SessionFileItem {
   id: string;
   thread_id: string;
   filename: string;
-  mode: "files_api" | "session_rag";
+  mode: "files_api" | "fulltext" | "session_rag" | "pending" | string;
   chunks_count: number;
   status: string;
   size_bytes: number | null;
   mime_type: string | null;
   created_at: string;
+  error?: string | null;
+  parser?: string | null;
+  preview_kind?: "pdf" | "text" | "image" | null;
 }

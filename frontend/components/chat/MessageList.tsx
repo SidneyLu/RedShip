@@ -145,7 +145,13 @@ function AttachmentStrip({
               ? "bg-white/15 text-white"
               : "border border-border bg-canvas/60 text-muted"
           )}
-          title={a.mode === "files_api" ? "Files API" : a.mode === "session_rag" ? "会话 RAG" : undefined}
+          title={
+            a.mode === "fulltext" || a.mode === "files_api"
+              ? "全文注入"
+              : a.mode === "session_rag"
+                ? "会话 RAG"
+                : undefined
+          }
         >
           <FileText className="h-3 w-3 shrink-0" />
           <span className="truncate">{a.filename}</span>

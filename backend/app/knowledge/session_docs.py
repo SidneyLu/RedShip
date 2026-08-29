@@ -1,8 +1,9 @@
-"""会话级文档智能（PLAN.md「文档智能」）。
+"""会话级文档智能。
 
-严格双路径，无运行时回退：
-  ≤ FILES_API_INLINE_MAX_TOKENS → DashScope Files API（system 中 fileid://）
-  > 阈值 / 图片 → 解析 → 分块 → embed → Milvus session_chunks（与 knowledge_base 隔离）
+策略 A：本地抽取正文为主；仅 fileid 能力模型才注入 fileid://。
+小文档 mode=fulltext（全文 system 注入 + session_chunks）；
+大文档/图片 mode=session_rag（仅 session_chunks）。
+扫描 PDF：MinerU 过短且 VISION_PDF_ENABLED 时回退 Vision PDF。
 """
 from __future__ import annotations
 
@@ -26,10 +27,36 @@ from app.knowledge.indexer import (
 from app.knowledge.ingestion.chunker import chunk_document
 from app.knowledge.ingestion.parser import (
     SESSION_UPLOAD_EXTENSIONS,
+    ParsedDocument,
+    Section,
     parse_document,
     parse_image_document,
+    parse_scanned_pdf_document,
 )
 from app.llm.dashscope import dashscope_client
+
+_INLINE_TEXT_EXTS = {".md", ".markdown", ".txt", ".text"}
+_FULLTEXT_MODES = frozenset({"fulltext", "files_api"})  # files_api = legacy alias
+_INDEXED_MODES = frozenset({"fulltext", "files_api", "session_rag"})
+
+
+def _inline_max_chars() -> int:
+    return max(1_000, int(settings.session_inline_max_chars))
+
+
+def _fileid_capable() -> bool:
+    model = (settings.chat_model or "").strip().lower()
+    if not model:
+        return False
+    allowed = [
+        m.strip().lower()
+        for m in (settings.fileid_capable_models or "").split(",")
+        if m.strip()
+    ]
+    for a in allowed:
+        if model == a or model.startswith(f"{a}-") or model.startswith(f"{a}."):
+            return True
+    return False
 
 
 def _estimate_tokens(text: str) -> int:
@@ -48,74 +75,151 @@ def _file_sha(path: Path) -> str:
     return h.hexdigest()
 
 
-def _uses_files_api(path: Path) -> bool:
-    """上传前判定走 Files API 还是会话 Milvus；图片一律 session_rag。"""
-    ext = path.suffix.lower()
-    size = path.stat().st_size
-
+def _wants_fulltext(path: Path, extracted_text: str | None, ext: str) -> bool:
+    """Small enough for full system-message injection (not images)."""
     if ext in IMAGE_EXTENSIONS:
         return False
-
-    if ext in {".md", ".markdown", ".txt", ".text"}:
-        text = path.read_text(encoding="utf-8", errors="strict")
+    if ext in _INLINE_TEXT_EXTS:
+        text = extracted_text or path.read_text(encoding="utf-8", errors="ignore")
         return _estimate_tokens(text) <= settings.files_api_inline_max_tokens
-
     if ext in {".pdf", ".docx"}:
-        return size <= settings.files_api_inline_max_bytes
+        if extracted_text is not None:
+            return _estimate_tokens(extracted_text) <= settings.files_api_inline_max_tokens
+        return path.stat().st_size <= settings.files_api_inline_max_bytes
+    return False
+
+
+def preview_kind_for_filename(filename: str) -> str | None:
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        return "pdf"
+    if ext in IMAGE_EXTENSIONS:
+        return "image"
+    if ext in _INLINE_TEXT_EXTS | {".docx"}:
+        return "text"
+    return None
+
+
+def _parsed_from_plain_text(title: str, text: str, *, parser: str, fmt: str) -> ParsedDocument:
+    body = text.strip()
+    if not body:
+        raise ValueError("Document contains no extractable text.")
+    return ParsedDocument(
+        title=title,
+        sections=[Section(heading_path=title, text=body)],
+        metadata={"format": fmt, "parser": parser},
+    )
+
+
+def _extract_docx_text(path: Path) -> str:
+    from docx import Document
+
+    doc = Document(str(path))
+    parts: list[str] = []
+    for para in doc.paragraphs:
+        t = (para.text or "").strip()
+        if t:
+            parts.append(t)
+    for table in doc.tables:
+        for table_row in table.rows:
+            cells = [(c.text or "").strip() for c in table_row.cells]
+            line = " | ".join(c for c in cells if c)
+            if line:
+                parts.append(line)
+    return "\n".join(parts).strip()
+
+
+def _extract_attachment_text(path: Path) -> str | None:
+    """Sync extract for txt/md/docx (and MinerU PDF). Prefer for preview/backfill."""
+    if not path.is_file():
+        return None
+    ext = path.suffix.lower()
+    try:
+        if ext in _INLINE_TEXT_EXTS:
+            text = path.read_text(encoding="utf-8", errors="ignore").strip()
+            return text or None
+        if ext == ".docx":
+            text = _extract_docx_text(path)
+            return text or None
+        if ext == ".pdf":
+            text = parse_document(path).full_text().strip()
+            return text or None
+    except Exception as e:
+        logger.warning("Failed to extract inline text from {}: {}", path.name, e)
+        return None
+    return None
+
+
+async def _parse_session_document(
+    storage_path: Path, *, ext: str, original_filename: str
+) -> tuple[ParsedDocument, str]:
+    """Parse session upload; PDF may fall back to Vision when MinerU text is too short."""
+    if ext in IMAGE_EXTENSIONS:
+        parsed = await parse_image_document(storage_path)
+        return parsed, (parsed.metadata or {}).get("parser") or "vision"
+
+    if ext == ".docx":
+        # Prefer lightweight extract for speed; fall back to MinerU if empty.
+        text = _extract_docx_text(storage_path)
+        if text:
+            return (
+                _parsed_from_plain_text(storage_path.stem, text, parser="python-docx", fmt="docx"),
+                "python-docx",
+            )
+        parsed = parse_document(storage_path)
+        return parsed, (parsed.metadata or {}).get("parser") or "mineru"
+
+    if ext in _INLINE_TEXT_EXTS:
+        parsed = parse_document(storage_path)
+        return parsed, (parsed.metadata or {}).get("parser") or "direct"
+
+    if ext == ".pdf":
+        parser_used = "mineru"
+        try:
+            parsed = parse_document(storage_path)
+        except Exception as e:
+            logger.warning("MinerU failed for {}: {}", original_filename, e)
+            parsed = None  # type: ignore[assignment]
+            if not settings.vision_pdf_enabled:
+                raise
+
+        if parsed is not None:
+            full = parsed.full_text().strip()
+            if len(full) >= settings.session_min_extract_chars:
+                return parsed, (parsed.metadata or {}).get("parser") or "mineru"
+            if not settings.vision_pdf_enabled:
+                raise ValueError(
+                    f"Extracted text too short ({len(full)} chars) for {original_filename}. "
+                    "若为扫描件请确认 MINERU_OCR=true 或开启 VISION_PDF_ENABLED。"
+                )
+            logger.info(
+                "Session PDF {} short extract ({} chars) → Vision PDF fallback",
+                original_filename,
+                len(full),
+            )
+        else:
+            logger.info("Session PDF {} MinerU failed → Vision PDF fallback", original_filename)
+
+        parsed = await parse_scanned_pdf_document(storage_path)
+        parser_used = "vision_pdf"
+        full = parsed.full_text().strip()
+        if len(full) < settings.session_min_extract_chars:
+            raise ValueError(
+                f"Extracted text too short ({len(full)} chars) for {original_filename} "
+                f"after Vision PDF. 请检查 VISION_MODEL / 页数上限。"
+            )
+        return parsed, parser_used
 
     raise ValueError(f"Unsupported session upload type: {ext}")
 
 
-async def _ingest_files_api(
-    session: AsyncSession,
+async def _index_parsed_to_session(
     *,
     thread_id: str,
-    storage_path: Path,
-    original_filename: str,
     sha: str,
-    size: int,
-    ext: str,
-) -> SessionFile:
-    file_id = await dashscope_client.upload_file(storage_path)
-    row = SessionFile(
-        thread_id=thread_id,
-        filename=original_filename,
-        storage_path=str(storage_path),
-        file_sha256=sha,
-        size_bytes=size,
-        mime_type=ext.lstrip("."),
-        mode="files_api",
-        dashscope_file_id=file_id,
-        status="ready",
-    )
-    session.add(row)
-    await session.commit()
-    await session.refresh(row)
-    return row
-
-
-async def _ingest_session_rag(
-    session: AsyncSession,
-    *,
-    thread_id: str,
-    storage_path: Path,
-    original_filename: str,
-    sha: str,
-    size: int,
-    ext: str,
-) -> SessionFile:
-    if ext in IMAGE_EXTENSIONS:
-        parsed = await parse_image_document(storage_path)
-    else:
-        parsed = parse_document(storage_path)
-
-    full = parsed.full_text().strip()
-    if ext in ({".pdf", ".docx"} | IMAGE_EXTENSIONS) and len(full) < settings.session_min_extract_chars:
-        raise ValueError(
-            f"Extracted text too short ({len(full)} chars) for {original_filename}. "
-            "若为扫描件请确认 MINERU_OCR=true；图片请检查 VISION_MODEL 可用性。"
-        )
-
+    parsed: ParsedDocument,
+) -> tuple[str, str, int]:
+    """Chunk + embed + upsert. Returns (namespace, doc_id, parent_count)."""
     parents = chunk_document(parsed)
     children = [c for p in parents for c in p.children]
     if not children:
@@ -144,23 +248,94 @@ async def _ingest_session_rag(
         for child, vec in zip(children, embeddings)
     ]
     upsert_chunks(collection, rows)
+    return namespace, fake_doc_id, len(parents)
 
-    row = SessionFile(
-        thread_id=thread_id,
-        filename=original_filename,
-        storage_path=str(storage_path),
-        file_sha256=sha,
-        size_bytes=size,
-        mime_type=ext.lstrip("."),
-        mode="session_rag",
-        milvus_namespace=namespace,
-        chunks_count=len(parents),
-        status="ready",
-        extra_metadata={"doc_id": fake_doc_id, "title": parsed.title},
+
+async def _optional_dashscope_upload(storage_path: Path) -> str | None:
+    try:
+        return await dashscope_client.upload_file(storage_path)
+    except Exception as e:
+        logger.warning("DashScope Files upload skipped/failed for {}: {}", storage_path.name, e)
+        return None
+
+
+async def process_session_file_row(session: AsyncSession, row: SessionFile) -> SessionFile:
+    """Ingest an existing SessionFile row (status processing → ready/failed)."""
+    if not row.storage_path:
+        raise ValueError("Missing storage_path")
+    storage_path = Path(row.storage_path)
+    if not storage_path.is_file():
+        raise ValueError(f"Storage file missing: {row.storage_path}")
+
+    original_filename = row.filename
+    sha = row.file_sha256 or _file_sha(storage_path)
+    size = row.size_bytes or storage_path.stat().st_size
+    ext = storage_path.suffix.lower()
+    if ext not in SESSION_UPLOAD_EXTENSIONS:
+        raise ValueError(f"Unsupported session upload type: {ext}")
+    if ext in IMAGE_EXTENSIONS and size > settings.session_image_max_bytes:
+        raise ValueError(
+            f"Image too large ({size} bytes); max {settings.session_image_max_bytes}"
+        )
+
+    # Drop previous vectors on retry
+    if row.milvus_namespace or (row.extra_metadata or {}).get("doc_id"):
+        try:
+            await purge_session_file_vectors(row)
+        except Exception as e:
+            logger.warning("Failed to purge old session vectors for {}: {}", row.id, e)
+
+    parsed, parser_used = await _parse_session_document(
+        storage_path, ext=ext, original_filename=original_filename
     )
-    session.add(row)
+    full = parsed.full_text().strip()
+    if ext in ({".pdf", ".docx"} | IMAGE_EXTENSIONS) and len(full) < settings.session_min_extract_chars:
+        raise ValueError(
+            f"Extracted text too short ({len(full)} chars) for {original_filename}."
+        )
+
+    namespace, doc_id, parent_count = await _index_parsed_to_session(
+        thread_id=row.thread_id, sha=sha, parsed=parsed
+    )
+
+    use_fulltext = _wants_fulltext(storage_path, full, ext)
+    mode = "fulltext" if use_fulltext else "session_rag"
+
+    max_chars = _inline_max_chars()
+    meta: dict = {
+        "doc_id": doc_id,
+        "title": parsed.title,
+        "parser": parser_used,
+    }
+    if use_fulltext:
+        meta["extracted_text"] = full[:max_chars]
+        meta["extracted_truncated"] = len(full) > max_chars
+
+    dashscope_file_id = row.dashscope_file_id
+    if use_fulltext:
+        # Strategy A: keep Files API upload as backup; failure does not block ready.
+        uploaded = await _optional_dashscope_upload(storage_path)
+        if uploaded:
+            dashscope_file_id = uploaded
+
+    row.file_sha256 = sha
+    row.size_bytes = size
+    row.mime_type = ext.lstrip(".")
+    row.mode = mode
+    row.dashscope_file_id = dashscope_file_id
+    row.milvus_namespace = namespace
+    row.chunks_count = parent_count
+    row.status = "ready"
+    row.extra_metadata = meta
     await session.commit()
     await session.refresh(row)
+    logger.info(
+        "Session file {} ready mode={} parser={} chunks={}",
+        original_filename,
+        mode,
+        parser_used,
+        parent_count,
+    )
     return row
 
 
@@ -170,52 +345,69 @@ async def ingest_session_file(
     thread_id: str,
     storage_path: Path,
     original_filename: str,
+    existing: SessionFile | None = None,
 ) -> SessionFile:
+    """Create (or reuse) a row and process it. Prefer async upload path with existing row."""
     sha = _file_sha(storage_path)
     size = storage_path.stat().st_size
     ext = storage_path.suffix.lower()
-    if ext not in SESSION_UPLOAD_EXTENSIONS:
-        raise ValueError(f"Unsupported session upload type: {ext}")
-    if ext in IMAGE_EXTENSIONS and size > settings.session_image_max_bytes:
-        raise ValueError(
-            f"Image too large ({size} bytes); max {settings.session_image_max_bytes}"
-        )
-
-    if _uses_files_api(storage_path):
-        logger.info("Session file {} → Files API path", original_filename)
-        return await _ingest_files_api(
-            session,
+    if existing is None:
+        row = SessionFile(
             thread_id=thread_id,
-            storage_path=storage_path,
-            original_filename=original_filename,
-            sha=sha,
-            size=size,
-            ext=ext,
+            filename=original_filename,
+            storage_path=str(storage_path),
+            file_sha256=sha,
+            size_bytes=size,
+            mime_type=ext.lstrip("."),
+            mode="pending",
+            status="processing",
+            chunks_count=0,
         )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+    else:
+        row = existing
+        row.storage_path = str(storage_path)
+        row.filename = original_filename
+        row.file_sha256 = sha
+        row.size_bytes = size
+        row.mime_type = ext.lstrip(".")
+        row.status = "processing"
+        row.mode = "pending"
+        meta = dict(row.extra_metadata or {})
+        meta.pop("error", None)
+        row.extra_metadata = meta or None
+        await session.commit()
+        await session.refresh(row)
 
-    logger.info("Session file {} → session RAG path", original_filename)
-    return await _ingest_session_rag(
-        session,
-        thread_id=thread_id,
-        storage_path=storage_path,
-        original_filename=original_filename,
-        sha=sha,
-        size=size,
-        ext=ext,
-    )
+    return await process_session_file_row(session, row)
+
+
+async def mark_session_file_failed(session: AsyncSession, row: SessionFile, error: str) -> SessionFile:
+    meta = dict(row.extra_metadata or {})
+    meta["error"] = error[:2000]
+    row.extra_metadata = meta
+    row.status = "failed"
+    if row.mode in {"pending", ""}:
+        row.mode = "pending"
+    await session.commit()
+    await session.refresh(row)
+    return row
 
 
 async def purge_session_file_vectors(row: SessionFile) -> None:
     from app.knowledge.indexer import drop_doc, drop_namespace
 
     collection = settings.milvus_session_collection
-    if row.mode == "session_rag":
-        meta = row.extra_metadata or {}
-        doc_id = meta.get("doc_id")
-        if doc_id:
-            await asyncio.to_thread(drop_doc, collection, str(doc_id))
-        elif row.milvus_namespace:
-            await asyncio.to_thread(drop_namespace, collection, row.milvus_namespace)
+    if row.mode not in _INDEXED_MODES and not row.milvus_namespace:
+        return
+    meta = row.extra_metadata or {}
+    doc_id = meta.get("doc_id")
+    if doc_id:
+        await asyncio.to_thread(drop_doc, collection, str(doc_id))
+    elif row.milvus_namespace:
+        await asyncio.to_thread(drop_namespace, collection, row.milvus_namespace)
 
 
 async def purge_thread_session_resources(
@@ -226,12 +418,12 @@ async def purge_thread_session_resources(
             await session.execute(select(SessionFile).where(SessionFile.thread_id == thread_id))
         ).scalars().all()
     for row in rows:
-        if row.mode == "files_api" and row.dashscope_file_id:
+        if row.dashscope_file_id:
             try:
                 await dashscope_client.delete_file(row.dashscope_file_id)
             except Exception as e:
                 logger.warning("Failed to delete DashScope file {}: {}", row.dashscope_file_id, e)
-        if row.mode == "session_rag":
+        if row.mode in _INDEXED_MODES or row.milvus_namespace:
             await purge_session_file_vectors(row)
 
 
@@ -242,35 +434,43 @@ async def build_session_system_messages(
         await session.execute(
             select(SessionFile).where(
                 SessionFile.thread_id == thread_id,
-                SessionFile.mode == "files_api",
+                SessionFile.mode.in_(list(_FULLTEXT_MODES)),
                 SessionFile.status == "ready",
             )
         )
     ).scalars().all()
     messages: list[dict[str, str]] = []
+    dirty = False
+    capable = _fileid_capable()
+    max_chars = _inline_max_chars()
     for row in rows:
-        if row.dashscope_file_id:
+        if capable and row.dashscope_file_id:
             messages.append({"role": "system", "content": f"fileid://{row.dashscope_file_id}"})
+        meta = dict(row.extra_metadata or {})
+        if not (meta.get("extracted_text") or "").strip() and row.storage_path:
+            text = _extract_attachment_text(Path(row.storage_path))
+            if text:
+                meta["extracted_text"] = text[:max_chars]
+                meta["extracted_truncated"] = len(text) > max_chars
+                row.extra_metadata = meta
+                dirty = True
         inline = _inline_text_attachment(row)
         if inline:
             messages.append(inline)
+    if dirty:
+        await session.commit()
     return messages
 
 
 def _inline_text_attachment(row: SessionFile) -> dict[str, str] | None:
-    """Expose small text attachments to models that cannot read fileid://."""
-    if not row.storage_path:
-        return None
-    path = Path(row.storage_path)
-    if path.suffix.lower() not in {".md", ".markdown", ".txt", ".text"}:
-        return None
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore").strip()
-    except OSError:
-        return None
+    """Inject extracted body for fulltext/files_api attachments."""
+    meta = row.extra_metadata if isinstance(row.extra_metadata, dict) else {}
+    text = (meta.get("extracted_text") or "").strip() if meta else ""
+    if not text and row.storage_path:
+        text = (_extract_attachment_text(Path(row.storage_path)) or "").strip()
     if not text:
         return None
-    max_chars = 20_000
+    max_chars = _inline_max_chars()
     clipped = text[:max_chars]
     suffix = "\n\n（附件内容已截断）" if len(text) > max_chars else ""
     return {
@@ -286,8 +486,8 @@ async def session_namespace_filter(
         await session.execute(
             select(SessionFile).where(
                 SessionFile.thread_id == thread_id,
-                SessionFile.mode == "session_rag",
                 SessionFile.status == "ready",
+                SessionFile.mode.in_(list(_INDEXED_MODES)),
             )
         )
     ).scalars().all()
@@ -296,3 +496,19 @@ async def session_namespace_filter(
         return None
     items = ", ".join(f'"{v}"' for v in ns_values)
     return f"namespace in [{items}]"
+
+
+def get_preview_text(row: SessionFile) -> tuple[str, bool]:
+    """Return (text, truncated) for preview API."""
+    meta = row.extra_metadata if isinstance(row.extra_metadata, dict) else {}
+    text = (meta.get("extracted_text") or "").strip() if meta else ""
+    truncated = bool(meta.get("extracted_truncated")) if meta else False
+    if text:
+        return text, truncated
+    if row.storage_path:
+        extracted = _extract_attachment_text(Path(row.storage_path)) or ""
+        max_chars = _inline_max_chars()
+        if len(extracted) > max_chars:
+            return extracted[:max_chars], True
+        return extracted, False
+    return "", False

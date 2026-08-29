@@ -237,8 +237,8 @@ async def retrieve(
             rows = await session.execute(
                 select(SessionFile).where(
                     SessionFile.thread_id == thread_id,
-                    SessionFile.mode == "session_rag",
                     SessionFile.status == "ready",
+                    SessionFile.mode.in_(["session_rag", "fulltext", "files_api"]),
                 )
             )
             for sf in rows.scalars():

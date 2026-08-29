@@ -5,8 +5,9 @@
 import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Send, Square, Sparkles, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { FileAttachment, removeSessionFile } from "./FileAttachment";
+import { FileAttachment, removeSessionFile, retrySessionFile } from "./FileAttachment";
 import { SessionDocsPanel } from "./SessionDocsPanel";
+import { SessionFilePreview } from "./SessionFilePreview";
 import type { SessionFileItem } from "@/lib/api";
 import { useToast } from "@/components/providers/ToastProvider";
 
@@ -43,6 +44,7 @@ export function Composer({
   const [value, setValue] = useState("");
   const [docsOpen, setDocsOpen] = useState(false);
   const [focused, setFocused] = useState(false);
+  const [previewFile, setPreviewFile] = useState<SessionFileItem | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const { show } = useToast();
   const sendBlocked = loading || backgroundBusy;
@@ -78,9 +80,26 @@ export function Composer({
         await removeSessionFile(threadId, id);
         const next = sessionFiles.filter((f) => f.id !== id);
         onFilesChange?.(next);
+        setPreviewFile((cur) => (cur?.id === id ? null : cur));
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         show({ title: "删除失败", description: msg, variant: "destructive" });
+      }
+    },
+    [threadId, sessionFiles, onFilesChange, show]
+  );
+
+  const handleRetry = useCallback(
+    async (id: string) => {
+      if (!threadId) return;
+      try {
+        const updated = await retrySessionFile(threadId, id);
+        const next = sessionFiles.map((f) => (f.id === id ? updated : f));
+        onFilesChange?.(next);
+        show({ title: "已重新开始解析", description: updated.filename, variant: "success" });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        show({ title: "重试失败", description: msg, variant: "destructive" });
       }
     },
     [threadId, sessionFiles, onFilesChange, show]
@@ -170,7 +189,17 @@ export function Composer({
         open={docsOpen}
         onOpenChange={setDocsOpen}
         onRemove={handleRemove}
+        onRetry={handleRetry}
+        onPreview={(f) => setPreviewFile(f)}
       />
+      {threadId && previewFile ? (
+        <SessionFilePreview
+          threadId={threadId}
+          file={previewFile}
+          open={Boolean(previewFile)}
+          onClose={() => setPreviewFile(null)}
+        />
+      ) : null}
       <div
         className={cn(
           "panel-elev shadow-lg ring-1 ring-crimson-100/60 transition-all",

@@ -1,8 +1,18 @@
 "use client";
 
-/** 本会话文档分析面板：路径说明、块数、体积、就绪状态。 */
+/** 本会话文档分析面板：路径说明、块数、体积、就绪/处理/失败状态与预览。 */
 
-import { FileText, Image as ImageIcon, Trash2, ChevronDown, CheckCircle2 } from "lucide-react";
+import {
+  FileText,
+  Image as ImageIcon,
+  Trash2,
+  ChevronDown,
+  CheckCircle2,
+  Loader2,
+  AlertCircle,
+  RefreshCw,
+  Eye,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SessionFileItem } from "@/lib/api";
 
@@ -30,10 +40,16 @@ function formatTime(iso: string): string {
 }
 
 function modeLabel(mode: SessionFileItem["mode"]): { title: string; hint: string } {
-  if (mode === "files_api") {
+  if (mode === "fulltext" || mode === "files_api") {
     return {
-      title: "Files API",
-      hint: "全文注入模型上下文，适合中短文档即时问答",
+      title: "全文注入",
+      hint: "正文已注入模型上下文，并已建会话检索索引",
+    };
+  }
+  if (mode === "pending") {
+    return {
+      title: "处理中",
+      hint: "正在解析与建索引",
     };
   }
   return {
@@ -47,10 +63,20 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onRemove?: (id: string) => void;
+  onRetry?: (id: string) => void;
+  onPreview?: (file: SessionFileItem) => void;
   className?: string;
 }
 
-export function SessionDocsPanel({ files, open, onOpenChange, onRemove, className }: Props) {
+export function SessionDocsPanel({
+  files,
+  open,
+  onOpenChange,
+  onRemove,
+  onRetry,
+  onPreview,
+  className,
+}: Props) {
   if (files.length === 0) return null;
 
   return (
@@ -78,6 +104,9 @@ export function SessionDocsPanel({ files, open, onOpenChange, onRemove, classNam
           {files.map((f) => {
             const ml = modeLabel(f.mode);
             const isImage = IMAGE_EXT.test(f.filename);
+            const processing = f.status === "processing";
+            const failed = f.status === "failed";
+            const ready = f.status === "ready";
             return (
               <li
                 key={f.id}
@@ -92,38 +121,86 @@ export function SessionDocsPanel({ files, open, onOpenChange, onRemove, classNam
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-start justify-between gap-2">
-                    <p className="truncate text-sm font-medium text-ink" title={f.filename}>
+                    <button
+                      type="button"
+                      className="truncate text-left text-sm font-medium text-ink hover:text-crimson-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      title={ready ? "点击预览" : f.filename}
+                      disabled={!ready || !onPreview}
+                      onClick={() => ready && onPreview?.(f)}
+                    >
                       {f.filename}
-                    </p>
-                    {onRemove ? (
-                      <button
-                        type="button"
-                        onClick={() => onRemove(f.id)}
-                        className="rounded-lg p-1 text-muted hover:bg-crimson-50 hover:text-crimson-700"
-                        title="移除附件"
-                        aria-label={`移除 ${f.filename}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    ) : null}
+                    </button>
+                    <div className="flex items-center gap-0.5">
+                      {ready && onPreview ? (
+                        <button
+                          type="button"
+                          onClick={() => onPreview(f)}
+                          className="rounded-lg p-1 text-muted hover:bg-crimson-50 hover:text-crimson-700"
+                          title="预览"
+                          aria-label={`预览 ${f.filename}`}
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
+                      {failed && onRetry ? (
+                        <button
+                          type="button"
+                          onClick={() => onRetry(f.id)}
+                          className="rounded-lg p-1 text-muted hover:bg-crimson-50 hover:text-crimson-700"
+                          title="重试解析"
+                          aria-label={`重试 ${f.filename}`}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
+                      {onRemove ? (
+                        <button
+                          type="button"
+                          onClick={() => onRemove(f.id)}
+                          className="rounded-lg p-1 text-muted hover:bg-crimson-50 hover:text-crimson-700"
+                          title="移除附件"
+                          aria-label={`移除 ${f.filename}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                     <span className="inline-flex items-center gap-1 rounded-full bg-crimson-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-crimson-700">
                       {ml.title}
                     </span>
                     <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px] text-muted">
-                      <CheckCircle2 className="h-3 w-3 text-emerald-600" />
-                      {f.status === "ready" ? "已就绪" : f.status}
+                      {processing ? (
+                        <>
+                          <Loader2 className="h-3 w-3 animate-spin text-amber-600" />
+                          处理中
+                        </>
+                      ) : failed ? (
+                        <>
+                          <AlertCircle className="h-3 w-3 text-crimson-700" />
+                          失败
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                          已就绪
+                        </>
+                      )}
                     </span>
                     <span className="text-[10px] text-muted">{formatBytes(f.size_bytes)}</span>
-                    {f.mode === "session_rag" && f.chunks_count > 0 ? (
+                    {ready && f.chunks_count > 0 ? (
                       <span className="text-[10px] text-muted">{f.chunks_count} 块</span>
                     ) : null}
                     {f.created_at ? (
                       <span className="text-[10px] text-muted">{formatTime(f.created_at)}</span>
                     ) : null}
                   </div>
-                  <p className="mt-1 text-xs leading-5 text-muted">{ml.hint}</p>
+                  {failed && f.error ? (
+                    <p className="mt-1 text-xs leading-5 text-crimson-700">{f.error}</p>
+                  ) : (
+                    <p className="mt-1 text-xs leading-5 text-muted">{ml.hint}</p>
+                  )}
                 </div>
               </li>
             );

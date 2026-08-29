@@ -17,6 +17,13 @@ interface Props {
   onOpenPanel?: () => void;
 }
 
+function modeHint(item: SessionFileItem): string {
+  if (item.status === "processing") return "正在解析…";
+  if (item.status === "failed") return "处理失败，可在面板重试";
+  if (item.mode === "fulltext" || item.mode === "files_api") return "全文注入 + 会话检索";
+  return "会话 RAG 分块索引";
+}
+
 export function FileAttachment({
   threadId,
   files: controlledFiles,
@@ -75,10 +82,9 @@ export function FileAttachment({
       const item: SessionFileItem = await resp.json();
       setFiles([item, ...files]);
       onOpenPanel?.();
-      const modeHint = item.mode === "files_api" ? "Files API 全文注入" : "会话 RAG 分块索引";
       show({
-        title: "文件已就绪",
-        description: `${item.filename} · ${modeHint}`,
+        title: item.status === "processing" ? "文件已上传" : "文件已就绪",
+        description: `${item.filename} · ${modeHint(item)}`,
         variant: "success",
       });
     } catch (e: unknown) {
@@ -127,4 +133,13 @@ export function FileAttachment({
 /** 供父组件删除附件时复用 API */
 export async function removeSessionFile(threadId: string, fileId: string): Promise<void> {
   await api(`/api/threads/${threadId}/files/${fileId}`, { method: "DELETE" });
+}
+
+export async function retrySessionFile(
+  threadId: string,
+  fileId: string
+): Promise<SessionFileItem> {
+  return api<SessionFileItem>(`/api/threads/${threadId}/files/${fileId}/retry`, {
+    method: "POST",
+  });
 }

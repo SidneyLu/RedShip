@@ -55,9 +55,15 @@ class Settings(BaseSettings):
     rag_kb_score_floor: float = Field(default=0.35, alias="RAG_KB_SCORE_FLOOR")
     rag_web_extract_top_k: int = Field(default=3, alias="RAG_WEB_EXTRACT_TOP_K")
 
-    # --- 文档智能：小文件走 Files API，大文件走会话 Milvus（Build+Query 会话路径） ---
+    # --- 文档智能：本地正文内联为主；小文件另可选 Files API 备用；均入会话 Milvus ---
     files_api_inline_max_tokens: int = Field(default=100_000, alias="FILES_API_INLINE_MAX_TOKENS")
     files_api_inline_max_bytes: int = Field(default=8_000_000, alias="FILES_API_INLINE_MAX_BYTES")
+    session_inline_max_chars: int = Field(default=80_000, alias="SESSION_INLINE_MAX_CHARS")
+    # 逗号分隔；仅这些模型才会注入 fileid://（qwen3.5-flash 等不支持）
+    fileid_capable_models: str = Field(
+        default="qwen-long,qwen-long-latest,qwen-doc-turbo,qwen-doc-turbo-latest",
+        alias="FILEID_CAPABLE_MODELS",
+    )
     session_doc_chunk_prefix: str = Field(default="session_", alias="SESSION_DOC_CHUNK_PREFIX")
     session_image_max_bytes: int = Field(default=10_000_000, alias="SESSION_IMAGE_MAX_BYTES")
     session_min_extract_chars: int = Field(default=200, alias="SESSION_MIN_EXTRACT_CHARS")

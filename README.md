@@ -10,9 +10,8 @@
 | 深度研究 | 规划 → 并行联网检索/抽取 → 反思循环 → 报告生成 | 1–10 分钟 |
 
 - **知识库**：`bibliography/` 目录增量摄入（SHA-256），Milvus `knowledge_base` 混合检索 → qwen3-rerank 精排
-- **会话附件**：用户上传仅进 `session_files` + `session_chunks`，与管理员文献隔离；小文件 Files API，大文件/图片走会话 RAG（MinerU OCR / VL）
+- **会话附件 / 文档智能**：上传后异步解析；小文档 **全文注入**（本地抽取正文进 system）并写入 `session_chunks`；大文档/图片走会话 RAG；扫描 PDF 在 MinerU 过短时可回退 Vision PDF。默认 `qwen3.5-flash` **不依赖** `fileid://`（仅 `qwen-long` / `qwen-doc*` 等才注入）。面板支持处理状态、重试与预览。
 - **记忆**：会话滚动摘要 + 滑动窗口；用户长期记忆跨会话召回（`/api/me/memories`）
-- **文档智能**：小文档走 DashScope Files API；大文档/扫描 PDF/图片走解析后会话级 Milvus RAG
 - **引用**：答案段落内嵌 `[(N)](/threads/.../citations/...)`，悬停预览
 
 ## 快速开始
@@ -71,10 +70,25 @@ RedShip/
 ├── docker-compose.override.yml  # 开发热重载（自动合并）
 ├── docker-compose.data.yml      # 数据层建库（MD-only）
 ├── docker-compose.mineru.yml    # MinerU 批转换
-├── PLAN.md
 ├── CHAT.md / RESPONSE.md / EMBEDDING.md / RERANK.md
 └── .env.example
 ```
+
+## 文档智能（会话附件）
+
+```
+上传 → status=processing（立即返回）
+  → 抽取正文（txt/md/docx；PDF=MinerU，过短且 VISION_PDF_ENABLED → Vision PDF；图片=VL）
+  → 分块 embed → Milvus session_chunks（所有就绪附件均可检索）
+  → 文本量 ≤ 阈值 → mode=fulltext：缓存 extracted_text，对话时注入 system
+                    （可选备份上传 DashScope Files；仅 FILEID_CAPABLE_MODELS 才注入 fileid://）
+  → 否则 → mode=session_rag：仅检索命中段落
+失败 → status=failed（可重试）；面板可预览 PDF/文本/图片
+```
+
+相关 API：`POST/GET /api/threads/{id}/files`、`POST .../files/{fid}/retry`、`GET .../content`、`GET .../text`。
+
+关键变量：`SESSION_INLINE_MAX_CHARS`、`FILEID_CAPABLE_MODELS`、`VISION_PDF_ENABLED`、`FILES_API_INLINE_MAX_*`。
 
 ## 环境变量（核心）
 
@@ -100,7 +114,10 @@ RESEARCH_MAX_ITERATIONS=6
 | `POST /api/knowledge/documents/upload` | 管理员上传文档 |
 | `POST /api/admin/bibliography/sync` | 增量同步 |
 | `POST /api/admin/bibliography/reindex` | 全量重建索引 |
-| `POST /api/threads/{id}/files` | 会话附件 |
+| `POST /api/threads/{id}/files` | 会话附件上传（异步，立即 `processing`） |
+| `POST /api/threads/{id}/files/{fid}/retry` | 失败附件重试 |
+| `GET /api/threads/{id}/files/{fid}/content` | 附件原文件流（预览） |
+| `GET /api/threads/{id}/files/{fid}/text` | 抽取正文（预览） |
 
 ## Docker Compose 说明
 
@@ -208,7 +225,7 @@ docker compose -f docker-compose.mineru.yml run --rm mineru
 | `bibliography/` | 文献源文件（bind mount，单独打 tar） |
 | `postgres.pg.dump` | 可选 sidecar，便于人工检查 |
 
-**不备份**：`.env`、DashScope Files API 远端 `fileid`（跨机后会话 Files API 附件需重新上传）。
+**不备份**：`.env`、DashScope Files API 远端 `fileid`（可选备份；跨机后若依赖 fileid 需重新上传，本地全文/RAG 不受影响）。
 
 ### 导出
 
@@ -340,7 +357,7 @@ npm run test:e2e
 
 ## 详细设计
 
-请参阅 [`PLAN.md`](PLAN.md) 获取架构图、Milvus Schema、SSE 事件格式与实施阶段说明。
+架构要点见上文「文档智能」与 [`CHAT.md`](CHAT.md) / [`RESPONSE.md`](RESPONSE.md) / [`EMBEDDING.md`](EMBEDDING.md) / [`RERANK.md`](RERANK.md)。原 `PLAN.md` 已归档删除，以本 README 与模块 docstring 为准。
 
 ## 代码注释约定
 
@@ -348,7 +365,7 @@ npm run test:e2e
 
 | 层级 | 要求 |
 |------|------|
-| 文件/模块 | 3–8 行：职责、上下游、与 PLAN 对应章节 |
+| 文件/模块 | 3–8 行：职责、上下游 |
 | 类 / 导出类型 | 用途与生命周期 |
 | 公共函数 / 路由 / Hook | `参数` / `返回` / `异常`（Python docstring 或 TS JSDoc） |
 | 行内注释 | 仅标注非显而易见逻辑（路由分支、序列化、SSE 分帧等） |
