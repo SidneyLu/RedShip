@@ -355,46 +355,13 @@ npm run test:e2e
 
 凭证同样使用 `E2E_ADMIN_*` 或根目录 `.env` 中的 `ADMIN_BOOTSTRAP_*`。Compose 未启动时系统测试会自动 skip。
 
-## 详细设计
-
-架构要点见上文「文档智能」与 [`CHAT.md`](CHAT.md) / [`RESPONSE.md`](RESPONSE.md) / [`EMBEDDING.md`](EMBEDDING.md) / [`RERANK.md`](RERANK.md)。原 `PLAN.md` 已归档删除，以本 README 与模块 docstring 为准。
-
-## 代码注释约定
-
-源码注释统一为**中文**，专有名词保留英文（LangGraph、Milvus、DashScope、SSE 等）。层次如下：
-
-| 层级 | 要求 |
-|------|------|
-| 文件/模块 | 3–8 行：职责、上下游 |
-| 类 / 导出类型 | 用途与生命周期 |
-| 公共函数 / 路由 / Hook | `参数` / `返回` / `异常`（Python docstring 或 TS JSDoc） |
-| 行内注释 | 仅标注非显而易见逻辑（路由分支、序列化、SSE 分帧等） |
-
-**不写**：自解释赋值、纯 re-export 的 `__init__.py`、LLM 提示词正文（`prompts.py`）。
-
-**Python 模板**（公共函数）：
-
-```python
-async def example(state: RagState) -> dict[str, Any]:
-    """一句话职责说明。
-
-    参数:
-        state: 图状态，含 query、history 等字段。
-
-    返回:
-        写入图的状态片段。
-
-    异常:
-        ValueError: 失败原因。
-    """
-```
-
-**TypeScript 模板**（导出函数）：
-
-```typescript
-/**
- * 一句话职责说明。
- * @param path - 相对或绝对 API 路径
- * @returns 解析后的 SSE 事件流
- */
-```
+## 界面预览
+![1](assets/1.jpg)
+![2](assets/2.jpg)
+![3](assets/3.jpg)
+![4](assets/4.jpg)
+![5](assets/5.jpg)
+![6](assets/6.jpg)
+![7](assets/7.jpg)
+![8](assets/8.jpg)
+![9](assets/9.jpg)
